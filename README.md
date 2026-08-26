@@ -328,10 +328,10 @@ token rotation, redeploy, troubleshooting). the `docker-compose.yml` and
 `approve.py` in this repo are the shape that deployment runs.
 
 redeploys can be triggered manually from the **Actions** tab via the `Deploy
-server` workflow (`.github/workflows/deploy-server.yml`) — it ships the source
-to the VM, rebuilds the Docker image, runs a health check, and never touches
-the live `.env` secrets. see the runbook §6 for the required repository
-secrets.
+server` workflow (`.github/workflows/deploy-server.yml`) — a self-hosted
+runner on the VM checks out the source, rebuilds the Docker image, runs a
+health check, and never touches the live `.env` secrets. see the runbook §6
+for one-time runner setup.
 
 ---
 

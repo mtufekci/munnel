@@ -1,23 +1,19 @@
 # Deploys the munnel server to the Azure dev VM (tunnels.momentumpay.xyz).
 #
 # Manually triggered only (Actions tab → "Deploy server" → Run workflow).
-# Ships the repo source over SCP (the repo is private — the VM can't git clone),
-# rebuilds the Docker image on the VM, and restarts the stack. The live .env
-# (token, signing key, session key) is never touched — it's excluded from the
-# tarball and already present on the VM.
+# A self-hosted GitHub Actions runner lives on the VM itself (label
+# `munnel-dev`), so the deploy job runs directly on the VM — no SSH, no SCP,
+# no inbound port changes. It checks out the repo, rsyncs the source to
+# /opt/munnel (preserving the live .env), rebuilds the Docker image, and
+# restarts the stack. The live .env (token, signing key, session key) is
+# never touched — it's excluded from the rsync and already present on the VM.
 #
-# Required repository secrets (Settings → Secrets and variables → Actions):
-#   SSH_PRIVATE_KEY  — ed25519 private key with SSH access to the VM
-#                      (the counterpart of ~/.ssh/id_ed25519.pub in the VM's
-#                      authorized_keys). Paste the FULL key including the
-#                      -----BEGIN/END----- lines.
-#   SSH_HOST         — VM hostname or IP, e.g. munnel-dev.westeurope.cloudapp.azure.com
-#   SSH_USER         — the VM user, e.g. azureuser
+# Test job runs on a GitHub-hosted ubuntu runner (the VM has no Go toolchain);
+# the deploy job only starts after tests pass (or are skipped).
 #
-# The VM user must have passwordless sudo (standard for Azure Ubuntu cloud-init)
-# and be in the docker group (or sudo covers docker). /opt/munnel must already
-# exist with a populated .env — this workflow deploys code, not first-boot setup.
-# For first-boot provisioning use deploy/azure/deploy.sh instead.
+# One-time setup: install the self-hosted runner on the VM (see
+# docs/OPERATIONS.md §6). No repository secrets are required — the runner
+# authenticates to GitHub outbound and runs jobs locally.
 
 name: Deploy server
 
@@ -33,109 +29,86 @@ on:
         type: boolean
         default: true
 
-# No concurrency issues — only one deploy should run at a time.
+# Only one deploy at a time — a rebuild mid-deploy could corrupt the stack.
 concurrency:
   group: deploy-server
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  test:
+    if: inputs.run_tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Go
-        if: inputs.run_tests
         uses: actions/setup-go@v5
         with:
           go-version: '1.25'
 
       - name: Run tests
-        if: inputs.run_tests
         run: go test -race ./...
 
-      - name: Configure SSH
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-        run: |
-          if [ -z "$SSH_PRIVATE_KEY" ] || [ -z "$SSH_HOST" ] || [ -z "$SSH_USER" ]; then
-            echo "::error::Missing required secret(s): SSH_PRIVATE_KEY, SSH_HOST, SSH_USER"
-            exit 1
-          fi
-          mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          # Strip any stray CRs (GitHub secret UI can introduce them on paste).
-          sed -i 's/\r$//' ~/.ssh/deploy_key
-          cat > ~/.ssh/config <<EOF
-          Host munnel-dev
-            HostName ${SSH_HOST}
-            User ${SSH_USER}
-            IdentityFile ~/.ssh/deploy_key
-            IdentitiesOnly yes
-            StrictHostKeyChecking accept-new
-            ServerAliveInterval 30
-            ConnectTimeout 10
-          EOF
-          # Verify connectivity + accept the host key.
-          ssh munnel-dev 'echo "✓ SSH connected to $(hostname)"'
+  deploy:
+    needs: test
+    # Run even if the test job was skipped (run_tests=false), but not if it
+    # failed or was cancelled.
+    if: always() && needs.test.result != 'failure' && needs.test.result != 'cancelled'
+    # The runner is installed on the Azure VM itself (label: munnel-dev).
+    runs-on: [self-hosted, munnel-dev]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Ship source to VM
+      - name: Sync source to /opt/munnel
         run: |
-          # Exclude .env (live secrets), .git, build artifacts, and editor/agent
-          # cruft so the tarball is lean and the VM's .env survives extraction.
-          tar -czf /tmp/munnel-src.tgz \
-            --exclude=bin --exclude=dist --exclude=.git --exclude=.claude \
-            --exclude=.env --exclude='*.tgz' --exclude=node_modules \
-            -C . .
-          ls -lh /tmp/munnel-src.tgz
-          scp /tmp/munnel-src.tgz munnel-dev:/tmp/munnel-src.tgz
-          echo "✓ source shipped"
+          # Rsync the checkout into /opt/munnel. --delete keeps the deploy
+          # clean (files removed from the repo are removed on the VM), but
+          # .env is excluded so live secrets (token, signing key, session
+          # key) survive. /opt/munnel is owned by a foreign UID from the
+          # initial tar deploy, so sudo is required.
+          sudo rsync -a --delete \
+            --exclude=.env \
+            --exclude=bin --exclude=dist --exclude=.git \
+            --exclude=node_modules --exclude='*.tgz' \
+            ./ /opt/munnel/
+          # Regenerate Caddyfile from the template ({$MUNNEL_DOMAIN} env
+          # substitution is read from .env at container start).
+          sudo cp /opt/munnel/Caddyfile.example /opt/munnel/Caddyfile
+          echo "✓ source synced to /opt/munnel"
 
       - name: Build and restart stack
+        working-directory: /opt/munnel
         run: |
-          ssh munnel-dev 'set -e
-            cd /opt/munnel
-            # Extract over /opt/munnel; .env is excluded from the tar so live
-            # secrets (token, signing key, session key) survive.
-            sudo tar xzf /tmp/munnel-src.tgz -C /opt/munnel
-            rm -f /tmp/munnel-src.tgz
-            # Regenerate Caddyfile from the template (uses {$MUNNEL_DOMAIN} env
-            # substitution read from .env at container start).
-            sudo cp Caddyfile.example Caddyfile
-            # Rebuild the server image + recreate changed containers.
-            sudo docker compose up -d --build
-            echo "=== compose ps ==="
-            sudo docker compose ps
-          '
+          sudo docker compose up -d --build
+          echo "=== compose ps ==="
+          sudo docker compose ps
 
       - name: Reload Caddy
         if: inputs.caddy_reload
         run: |
-          ssh munnel-dev 'sudo docker exec munnel-caddy-1 caddy reload --config /etc/caddy/Caddyfile 2>&1 || sudo docker compose restart caddy'
+          sudo docker exec munnel-caddy-1 caddy reload --config /etc/caddy/Caddyfile 2>&1 \
+            || sudo docker compose -f /opt/munnel/docker-compose.yml restart caddy
 
       - name: Health check
         run: |
-          # The server takes a few seconds to bind after recreate. Poll from the
-          # VM itself (the ingress is bound to 127.0.0.1:8080, not the public IP).
-          ssh munnel-dev 'set +e
-            for i in $(seq 1 12); do
-              if curl -sf http://localhost:8080/healthz; then
-                echo
-                echo "✓ server healthy"
-                exit 0
-              fi
-              echo "  …waiting (attempt $i/12)"
-              sleep 5
-            done
-            echo "::error::health check failed — server did not respond on :8080/healthz"
-            exit 1
-          '
+          # The server takes a few seconds to bind after recreate. Poll from
+          # the VM itself (the ingress is bound to 127.0.0.1:8080, not the
+          # public IP).
+          for i in $(seq 1 12); do
+            if curl -sf http://localhost:8080/healthz; then
+              echo
+              echo "✓ server healthy"
+              exit 0
+            fi
+            echo "  …waiting (attempt $i/12)"
+            sleep 5
+          done
+          echo "::error::health check failed — server did not respond on :8080/healthz"
+          exit 1
 
       - name: Dump server logs on failure
         if: failure()
         run: |
-          ssh munnel-dev 'sudo docker compose -f /opt/munnel/docker-compose.yml logs --tail=40 munnel-server 2>&1 || true' || true
+          sudo docker compose -f /opt/munnel/docker-compose.yml logs --tail=40 munnel-server 2>&1 || true

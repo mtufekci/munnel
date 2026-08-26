@@ -90,7 +90,7 @@ deploy/
   digitalocean/   # deploy.sh (doctl)
   gcp/            # deploy.sh (gcloud)
 .github/
-  workflows/deploy-server.yml  # manual workflow_dispatch: ship source to the Azure VM + rebuild
+  workflows/deploy-server.yml  # manual workflow_dispatch: test on ubuntu-latest, deploy via self-hosted runner on the VM
 Caddyfile.example # on-demand TLS with ask http://ask:8080/check
 docker-compose.yml# munnel-server + Caddy + approve (built from source, no registry)
 Dockerfile        # golang:1.25 → server binary

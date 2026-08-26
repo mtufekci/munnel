@@ -258,27 +258,51 @@ the ask container are pulled images, no rebuild.
 ### Deploy via GitHub Actions (manual)
 
 There is a `Deploy server` workflow at `.github/workflows/deploy-server.yml`,
-triggered manually from the Actions tab (no push/PR trigger). It does the same
-ship-and-rebuild as above, plus an optional `go test -race ./...` gate and a
-post-deploy health check. Use it when you don't want to SSH from your laptop.
+triggered manually from the Actions tab (no push/PR trigger). It runs an
+optional `go test -race ./...` gate on a GitHub-hosted runner, then deploys
+on a **self-hosted runner that lives on the VM itself** — no SSH, no SCP, no
+inbound port changes to the NSG. The deploy job checks out the repo directly
+on the VM, rsyncs it to `/opt/munnel` (preserving `.env`), rebuilds the Docker
+image, and runs a health check.
 
-**One-time setup — add three repository secrets** (Settings → Secrets and
-variables → Actions):
+**One-time setup — install the self-hosted runner on the VM:**
 
-| Secret | Value |
-|--------|-------|
-| `SSH_PRIVATE_KEY` | the ed25519 private key with access to the VM (full key, including `-----BEGIN/END-----`) |
-| `SSH_HOST` | `munnel-dev.westeurope.cloudapp.azure.com` (or the IP `51.105.170.135`) |
-| `SSH_USER` | `azureuser` |
+```bash
+# 1. Get a registration token (short-lived — use within ~1 hour). NOTE: it's
+#    a POST endpoint; a GET returns 404.
+REG_TOKEN=$(gh api -X POST repos/mtufekci/munnel/actions/runners/registration-token --jq .token)
+
+# 2. Install the runner agent on the VM.
+ssh munnel-dev 'mkdir -p ~/actions-runner && cd ~/actions-runner'
+ssh munnel-dev 'cd ~/actions-runner && curl -sL https://github.com/actions/runner/releases/download/v2.337.0/actions-runner-linux-x64-2.337.0.tar.gz | tar xz'
+
+# 3. Configure + install as a systemd service (so it survives reboots).
+echo "$REG_TOKEN" | ssh munnel-dev 'cd ~/actions-runner && ./config.sh \
+  --url https://github.com/mtufekci/munnel --token "$(cat)" \
+  --labels munnel-dev --unattended --replace && \
+  sudo ./svc.sh install azureuser && sudo ./svc.sh start'
+```
+
+Verify it's online:
+
+```bash
+gh api repos/mtufekci/munnel/actions/runners --jq '.runners[] | {name, status, labels: [.labels[].name]}'
+# → {"name":"vm-munnel-dev","status":"online","labels":["self-hosted","Linux","X64","munnel-dev"]}
+```
+
+The runner service is `actions.runner.mtufekci-munnel.vm-munnel-dev.service`
+(`sudo systemctl status actions.runner.mtufekci-munnel.vm-munnel-dev.service`).
+It connects to GitHub outbound, so no NSG changes are needed — the SSH port
+stays locked to the deployer IP.
 
 Then: Actions → **Deploy server** → Run workflow. Inputs:
 
-- **Run tests** (default on) — runs `go test -race ./...` first; the deploy
-  aborts if any test fails.
+- **Run tests** (default on) — runs `go test -race ./...` on a GitHub-hosted
+  runner first; the deploy aborts if any test fails.
 - **Reload Caddy** (default on) — reloads the Caddyfile after deploy (needed
   only if `Caddyfile.example` changed; harmless otherwise).
 
-The workflow excludes `.env` from the tarball, so live secrets are never
+The workflow excludes `.env` from the rsync, so live secrets are never
 touched. It does not do first-boot provisioning — for a fresh VM use
 `deploy/azure/deploy.sh`. On a failed health check it dumps the last 40 lines
 of `munnel-server` logs in the workflow summary.
