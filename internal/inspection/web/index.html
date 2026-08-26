@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>munnel inspector</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#0e0c0d;color:#e8e6e3;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}
+button{font:inherit;cursor:pointer}
+#app{display:flex;flex-direction:column;height:100vh}
+
+/* header */
+#top{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid #241f1c;background:#121010}
+#top .brand{font-weight:700;letter-spacing:-.02em;font-size:15px}
+#top .brand em{font-style:normal;color:#c8b6ff}
+.dot{width:8px;height:8px;border-radius:50%;background:#f87171;flex:none}
+.dot.on{background:#5eead4;box-shadow:0 0 8px #5eead499}
+.dot.conn{background:#facc15}
+#status-url{color:#c8b6ff;font-size:12px;text-decoration:none}
+#status-url:hover{text-decoration:underline}
+#status-line{color:#8a8178;font-size:11px;margin-left:auto}
+
+/* toolbar */
+#bar{display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid #241f1c;flex-wrap:wrap}
+.chip{border:1px solid #2a2320;background:#161213;color:#a09a92;border-radius:20px;padding:3px 12px}
+.chip.active{border-color:#c8b6ff;color:#c8b6ff;background:#1d1826}
+#search{border:1px solid #2a2320;background:#161213;color:#e8e6e3;border-radius:6px;padding:5px 10px;width:220px;font:inherit;font-size:12px;outline:none}
+#search:focus{border-color:#6d5bb8}
+#clear-btn{border:1px solid #2a2320;background:transparent;color:#a09a92;border-radius:6px;padding:4px 12px}
+#clear-btn:hover{color:#e8e6e3;border-color:#573f3f}
+
+/* main split */
+#main{flex:1;display:flex;min-height:0}
+#list{width:420px;min-width:280px;border-right:1px solid #241f1c;overflow-y:auto;resize:horizontal}
+#detail{flex:1;overflow-y:auto;min-width:0}
+
+.row{display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid #1a1614;cursor:pointer;white-space:nowrap}
+.row:hover{background:#161213}
+.row.sel{background:#1d1826;border-left:2px solid #c8b6ff}
+.row .m{font-weight:700;font-size:11px;width:44px;flex:none}
+.row .path{flex:1;overflow:hidden;text-overflow:ellipsis;color:#d7d2cb}
+.row .st{font-size:11px;flex:none}
+.row .ms{color:#57504a;font-size:10px;width:52px;text-align:right;flex:none}
+.row .re{font-size:9px;color:#c8b6ff;border:1px solid #3a2f5e;border-radius:8px;padding:0 6px;flex:none}
+.m.get{color:#5eead4}.m.post{color:#a7f3d0}.m.put{color:#93c5fd}.m.patch{color:#c4b5fd}.m.delete{color:#fca5a5}.m.other{color:#e5e7eb}
+.s2{color:#4ade80}.s3{color:#93c5fd}.s4{color:#facc15}.s5{color:#f87171}.sx{color:#f87171}
+.empty{padding:3rem 2rem;color:#57504a;text-align:center;line-height:2}
+
+/* detail */
+#detail-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid #241f1c;position:sticky;top:0;background:#0e0c0d;z-index:5}
+#detail-title{font-size:14px;font-weight:600}
+#replay-btn{border:1px solid #6d5bb8;background:#1d1826;color:#c8b6ff;border-radius:6px;padding:5px 14px;margin-left:auto}
+#replay-btn:hover{background:#261e3d}
+#replay-btn:disabled{opacity:.4;cursor:not-allowed}
+.tabs{display:flex;gap:2px;padding:0 18px;border-bottom:1px solid #241f1c;position:sticky;top:47px;background:#0e0c0d;z-index:5}
+.tab{border:none;background:transparent;color:#8a8178;padding:8px 14px;border-bottom:2px solid transparent}
+.tab.active{color:#c8b6ff;border-bottom-color:#c8b6ff}
+.pane{padding:14px 18px}
+.pane h4{margin:14px 0 6px;color:#8a8178;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+.pane h4:first-child{margin-top:0}
+table.hd{border-collapse:collapse;width:100%}
+table.hd td{padding:3px 8px 3px 0;vertical-align:top;border-bottom:1px solid #1a1614;font-size:12px}
+table.hd td.k{color:#8a7fe0;white-space:nowrap;width:1%;padding-right:16px}
+table.hd td.v{color:#d7d2cb;word-break:break-all}
+pre.body{background:#121010;border:1px solid #241f1c;border-radius:8px;padding:12px;overflow-x:auto;font-size:12px;line-height:1.55;max-height:420px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.trunc{color:#facc15;font-size:11px;margin-top:6px}
+.tok-k{color:#8a7fe0}.tok-s{color:#86efac}.tok-n{color:#fbbf24}.tok-b{color:#c084fc}
+#ws-badge{font-size:10px;color:#57504a}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <span class="brand">munnel <em>inspector</em></span>
+    <span class="dot" id="dot"></span>
+    <a id="status-url" href="#" target="_blank" rel="noopener">connecting…</a>
+    <span id="ws-badge"></span>
+    <span id="status-line"></span>
+  </div>
+  <div id="bar">
+    <button class="chip active" data-m="ALL">all</button>
+    <button class="chip" data-m="GET">GET</button>
+    <button class="chip" data-m="POST">POST</button>
+    <button class="chip" data-m="PUT">PUT</button>
+    <button class="chip" data-m="PATCH">PATCH</button>
+    <button class="chip" data-m="DELETE">DELETE</button>
+    <button class="chip" data-m="ERR">errors</button>
+    <input id="search" placeholder="filter path…">
+    <button id="clear-btn">clear</button>
+  </div>
+  <div id="main">
+    <div id="list"></div>
+    <div id="detail"><div class="empty">select a request to inspect<br><span style="font-size:11px">captured traffic streams in live over the tunnel</span></div></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const state = {
+  records: [],
+  selected: null,
+  method: "ALL",
+  q: "",
+  tab: "response", // response | request | headers
+};
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* ---------- data ---------- */
+async function load() {
+  try {
+    const [reqs, status] = await Promise.all([
+      fetch("/api/requests").then(r => r.json()),
+      fetch("/api/status").then(r => r.json()),
+    ]);
+    state.records = reqs || [];
+    renderStatus(status);
+    renderList();
+    renderDetail();
+  } catch (e) { /* server still starting */ }
+}
+setInterval(async () => {
+  try { renderStatus(await (await fetch("/api/status")).json()); } catch(e){}
+}, 5000);
+
+function renderStatus(st) {
+  const dot = $("#dot"), url = $("#status-url"), line = $("#status-line");
+  if (st && st.connected) {
+    dot.className = "dot on";
+    url.textContent = st.public_url || "connected";
+    url.href = st.public_url || "#";
+    const up = st.since ? fmtUptime(Date.now() - new Date(st.since).getTime()) : "";
+    line.textContent = `→ ${st.target || ""} · ${st.requests || 0} request${st.requests===1?"":"s"} · up ${up}`;
+  } else {
+    dot.className = "dot";
+    url.textContent = "tunnel offline";
+    url.removeAttribute("href");
+    line.textContent = (st && st.last_message) || "waiting for tunnel…";
+  }
+}
+function fmtUptime(ms) {
+  const s = Math.floor(ms/1000), m = Math.floor(s/60), h = Math.floor(m/60);
+  if (h) return h+"h "+(m%60)+"m";
+  if (m) return m+"m "+(s%60)+"s";
+  return s+"s";
+}
+
+/* ---------- websocket ---------- */
+function connectWS() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  const badge = $("#ws-badge");
+  ws.onopen = () => { badge.textContent = "live"; };
+  ws.onclose = () => { badge.textContent = "reconnecting…"; setTimeout(connectWS, 1200); };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.type === "request" && msg.record) {
+      state.records.unshift(msg.record);
+      if (state.records.length > 400) state.records.pop();
+      renderList();
+      if (state.selected === msg.record.id) renderDetail();
+    }
+  };
+}
+
+/* ---------- filtering ---------- */
+function filtered() {
+  return state.records.filter(r => {
+    if (state.method === "ERR" && !(r.errored || r.status >= 400)) return false;
+    if (state.method !== "ALL" && state.method !== "ERR" && r.method !== state.method) return false;
+    if (state.q && !(r.path || "").toLowerCase().includes(state.q)) return false;
+    return true;
+  });
+}
+document.querySelectorAll(".chip[data-m]").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".chip[data-m]").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  state.method = b.dataset.m;
+  renderList();
+}));
+$("#search").addEventListener("input", e => { state.q = e.target.value.toLowerCase(); renderList(); });
+$("#clear-btn").addEventListener("click", async () => {
+  await fetch("/api/requests", {method: "DELETE"});
+  state.records = []; state.selected = null;
+  renderList(); renderDetail();
+});
+
+/* ---------- list ---------- */
+function statusClass(r) {
+  if (r.errored || !r.status) return "sx";
+  const c = Math.floor(r.status/100);
+  return "s" + (c >= 2 && c <= 5 ? c : "x");
+}
+function renderList() {
+  const el = $("#list");
+  const rows = filtered();
+  if (!rows.length) {
+    el.innerHTML = `<div class="empty">no requests yet<br><span style="font-size:11px">traffic through your public URL appears here live</span></div>`;
+    return;
+  }
+  el.innerHTML = rows.map(r => `
+    <div class="row${r.id===state.selected?" sel":""}" data-id="${r.id}">
+      <span class="m ${String(r.method||"").toLowerCase()} m-${String(r.method||"o").toLowerCase()}">${esc(r.method||"—")}</span>
+      <span class="path">${esc(r.path||"")}</span>
+      ${r.replayed?'<span class="re">replay</span>':""}
+      <span class="st ${statusClass(r)}">${r.errored?"ERR":(r.status||"—")}</span>
+      <span class="ms">${r.duration_ms ?? "—"}ms</span>
+    </div>`).join("");
+  el.querySelectorAll(".row").forEach(row => row.addEventListener("click", () => {
+    state.selected = +row.dataset.id;
+    state.tab = "response";
+    renderList(); renderDetail();
+  }));
+}
+
+/* ---------- detail ---------- */
+function jsonHighlight(src) {
+  return esc(src)
+    .replace(/(&quot;)(.*?)(&quot;)(\s*:)?/g, (m, q1, inner, q2, colon) =>
+      colon ? `<span class="tok-k">${q1}${inner}${q2}</span>${colon}` : `<span class="tok-s">${q1}${inner}${q2}</span>`)
+    .replace(/\b(-?\d+\.?\d*([eE][+-]?\d+)?)\b/g, '<span class="tok-n">$1</span>')
+    .replace(/\b(true|false|null)\b/g, '<span class="tok-b">$1</span>');
+}
+function fmtBody(body, truncated) {
+  if (!body) return '<div class="empty" style="padding:1rem">empty body</div>';
+  let out = body, json = false;
+  try { out = JSON.stringify(JSON.parse(body), null, 2); json = true; } catch {}
+  const t = truncated ? `<div class="trunc">⚠ truncated — full body exceeded the capture limit</div>` : "";
+  return `<pre class="body">${json ? jsonHighlight(out) : esc(out)}</pre>${t}`;
+}
+function headerTable(h) {
+  if (!h || !Object.keys(h).length) return '<div class="empty" style="padding:1rem">no headers</div>';
+  const rows = Object.keys(h).sort().map(k =>
+    `<tr><td class="k">${esc(k)}</td><td class="v">${esc((h[k]||[]).join(", "))}</td></tr>`).join("");
+  return `<table class="hd">${rows}</table>`;
+}
+function renderDetail() {
+  const el = $("#detail");
+  const r = state.records.find(x => x.id === state.selected);
+  if (!r) {
+    el.innerHTML = `<div class="empty">select a request to inspect<br><span style="font-size:11px">captured traffic streams in live over the tunnel</span></div>`;
+    return;
+  }
+  const tab = state.tab;
+  let pane = "";
+  if (tab === "response") {
+    pane = `<h4>response — ${r.errored ? "error" : (r.status || "no response")}</h4>` +
+      (r.errored && r.error ? `<pre class="body">${esc(r.error)}</pre>` : fmtBody(r.resp_body, r.resp_body_truncated));
+  } else if (tab === "request") {
+    pane = `<h4>request body</h4>${fmtBody(r.req_body, r.req_body_truncated)}`;
+  } else {
+    pane = `<h4>request headers</h4>${headerTable(r.req_headers)}<h4>response headers</h4>${headerTable(r.resp_headers)}`;
+  }
+  el.innerHTML = `
+    <div id="detail-head">
+      <span id="detail-title">${esc(r.method)} ${esc(r.path)}</span>
+      <span class="st ${statusClass(r)}">${r.errored?"ERR":r.status||"—"}</span>
+      <span style="color:#57504a">${r.duration_ms ?? "—"}ms · ${new Date(r.time).toLocaleTimeString()}</span>
+      ${r.replayed?'<span class="re">replay</span>':""}
+      <button id="replay-btn" ${r.req_body_truncated ? "disabled title='stored body was truncated'" : ""}>↻ replay</button>
+    </div>
+    <div class="tabs">
+      <button class="tab${tab==="response"?" active":""}" data-t="response">response</button>
+      <button class="tab${tab==="request"?" active":""}" data-t="request">request</button>
+      <button class="tab${tab==="headers"?" active":""}" data-t="headers">headers</button>
+    </div>
+    <div class="pane">${pane}</div>`;
+  el.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => {
+    state.tab = b.dataset.t; renderDetail();
+  }));
+  const btn = $("#replay-btn");
+  if (btn && !btn.disabled) btn.addEventListener("click", async () => {
+    btn.disabled = true; btn.textContent = "replaying…";
+    try {
+      const fresh = await (await fetch(`/api/replay/${r.id}`, {method: "POST"})).json();
+      if (fresh && fresh.id) { state.selected = fresh.id; }
+    } finally { renderList(); renderDetail(); }
+  });
+}
+
+load();
+connectWS();
+</script>
+</body>
+</html>

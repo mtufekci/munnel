@@ -1,0 +1,35 @@
+# Caddyfile.example — TLS termination for munnel with on-demand per-subdomain certs.
+#
+# Rename to `Caddyfile` and set MUNNEL_DOMAIN in your environment (docker
+# compose passes it through). Each *.tunnels.example.com subdomain gets its
+# own Let's Encrypt certificate on first request via on-demand TLS.
+#
+# Caddy v2.8+ requires a permission module for on-demand TLS to prevent abuse
+# (a stranger could otherwise force your server to issue certs for arbitrary
+# domains). The `ask` endpoint below — the `ask` service in
+# docker-compose.yml (approve.py) — approves only your apex and its
+# subdomains, refusing everything else. No DNS-provider plugin or wildcard
+# certificate is needed: each subdomain's A record (the wildcard) resolves to
+# this host, so the HTTP-01 challenge succeeds.
+#
+# If you prefer a wildcard certificate instead, build Caddy with a DNS
+# provider plugin (e.g. cloudflare), drop the `*.{$MUNNEL_DOMAIN}` block's
+# `tls { on_demand }`, and use `tls { dns cloudflare {env.CF_API_TOKEN} }`.
+
+{
+	email admin@example.com
+	on_demand_tls {
+		ask http://ask:8080/check
+	}
+}
+
+{$MUNNEL_DOMAIN} {
+	reverse_proxy munnel-server:8080
+}
+
+*.{$MUNNEL_DOMAIN} {
+	tls {
+		on_demand
+	}
+	reverse_proxy munnel-server:8080
+}

@@ -1,0 +1,58 @@
+# munnel server, production shape: munnel-server + Caddy (TLS) + ask endpoint.
+#
+# Configure via .env (see .env.example):
+#   MUNNEL_DOMAIN=tunnels.example.com
+#   MUNNEL_TOKENS=secret123
+#   MUNNEL_SCHEME=https
+#
+# DNS: point an A record for both the apex and the wildcard at your host:
+#   tunnels.example.com     A  <host-ip>
+#   *.tunnels.example.com   A  <host-ip>
+#
+# Caddy obtains per-subdomain Let's Encrypt certs on demand (on first request
+# to each *.tunnels.example.com subdomain). The `ask` service gates issuance to
+# your own domain only, which Caddy requires (v2.8+) to prevent on-demand TLS
+# abuse. The apex cert is obtained normally on startup.
+services:
+  munnel-server:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "7001:7001"               # control + multiplexing (tunnel clients dial this)
+      - "127.0.0.1:8080:8080"     # public HTTP ingress — only Caddy reaches this
+    command:
+      - --domain=${MUNNEL_DOMAIN:-localhost}
+      - --control-addr=:7001
+      - --proxy-addr=:8080
+      - --public-scheme=${MUNNEL_SCHEME:-https}
+      - --public-port=443
+      - --auth-tokens=${MUNNEL_TOKENS:-}
+
+  ask:
+    image: python:3-alpine
+    restart: unless-stopped
+    environment:
+      - MUNNEL_DOMAIN=${MUNNEL_DOMAIN:-localhost}
+    volumes:
+      - ./approve.py:/app/approve.py:ro
+    command: ["python", "/app/approve.py"]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - MUNNEL_DOMAIN=${MUNNEL_DOMAIN:-localhost}
+    depends_on:
+      - munnel-server
+      - ask
+
+volumes:
+  caddy_data:
+  caddy_config:
