@@ -452,7 +452,7 @@ munnel/
 ├── install.sh                  # source installer (builds client + server)
 ├── install-dev.sh              # one-command dev setup for a managed server
 ├── .github/workflows/
-│   └── deploy-server.yml       # manual workflow_dispatch: ship + rebuild on the Azure VM
+│   └── deploy-server.yml       # manual workflow_dispatch: test + deploy via self-hosted runner on the Azure VM
 └── docs/
     ├── OPERATIONS.md           # managed Azure deployment + operator runbook
     └── diagrams/               # archify diagrams (HTML viewer + dark/light PNG exports)
