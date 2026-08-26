@@ -43,6 +43,9 @@ type Claims struct {
 	// ID is a unique, random identifier used for revocation. It is safe to
 	// expose (it is not a secret — the signature is).
 	ID string `json:"id"`
+	// Prot mandates forward-auth on the tunnel this token opens. The holder
+	// cannot disable it. (Operator-set; the client may also opt in via --protect.)
+	Prot bool `json:"prot,omitempty"`
 }
 
 // Sentinel errors returned by Parse. Wrapping lets the Authenticator surface
@@ -55,8 +58,21 @@ var (
 
 // Mint signs and returns a new token for the given subdomain claim and TTL.
 // If sub is "" the holder may claim any free subdomain. If ttl <= 0 the token
-// never expires (use sparingly).
+// never expires (use sparingly). For the prot (forward-auth mandate) claim,
+// use MintWith.
 func Mint(key []byte, sub string, ttl time.Duration) (string, error) {
+	return MintWith(key, MintOpts{Sub: sub, TTL: ttl})
+}
+
+// MintOpts configures MintWith.
+type MintOpts struct {
+	Sub  string        // reserved subdomain; "" = any
+	TTL  time.Duration // lifetime; 0 = never expires
+	Prot bool          // mandate forward-auth on the tunnel
+}
+
+// MintWith signs a token with the full option set.
+func MintWith(key []byte, opts MintOpts) (string, error) {
 	if len(key) == 0 {
 		return "", errors.New("munnel token: signing key is empty")
 	}
@@ -64,9 +80,9 @@ func Mint(key []byte, sub string, ttl time.Duration) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("munnel token: generate id: %w", err)
 	}
-	c := Claims{Sub: sub, ID: id}
-	if ttl > 0 {
-		c.Exp = time.Now().Add(ttl).Unix()
+	c := Claims{Sub: opts.Sub, ID: id, Prot: opts.Prot}
+	if opts.TTL > 0 {
+		c.Exp = time.Now().Add(opts.TTL).Unix()
 	}
 	payload, err := json.Marshal(c)
 	if err != nil {

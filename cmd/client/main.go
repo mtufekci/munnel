@@ -34,6 +34,7 @@ func run(argv []string) int {
 	var inspectSet, inspectVal bool
 	var maxBodyMB int
 	var maxBodySet bool
+	var protect bool
 	var showVersion bool
 
 	// Defaults from ~/.munnel/config (or $MUNNEL_CONFIG) then MUNNEL_* env vars.
@@ -86,6 +87,8 @@ func run(argv []string) int {
 		case strings.HasPrefix(a, "--max-body-mb="):
 			maxBodyMB, _ = strconv.Atoi(strings.TrimPrefix(a, "--max-body-mb="))
 			maxBodySet = true
+		case a == "--protect":
+			protect = true
 		case a == "--version" || a == "-v":
 			showVersion = true
 		case a == "-h" || a == "--help":
@@ -128,6 +131,7 @@ func run(argv []string) int {
 		ServerAddr:  sf.server,
 		Subdomain:   sf.subdomain,
 		Token:       sf.token,
+		Protect:     protect,
 		Inspect:     inspectOn,
 		InspectAddr: sf.inspectAddr,
 		MaxBody:     32 << 20,
@@ -238,6 +242,7 @@ flags:
       --inspect             run the web inspector           (default true)
       --inspect-addr <addr> inspector listen address        (default ":4040")
       --max-body-mb <n>     max request body in megabytes   (default 32)
+      --protect             require viewer login (forward-auth) on this tunnel
   -v, --version             print version
   -h, --help                show this help
 

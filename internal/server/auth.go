@@ -150,6 +150,18 @@ func (a *Authenticator) ReservedSubdomain(tok string) string {
 	return a.reserved[tok]
 }
 
+// ProtectedByToken reports whether a signed token mandates forward-auth
+// (its `prot` claim). Static tokens never mandate it; the client opts in via
+// --protect instead.
+func (a *Authenticator) ProtectedByToken(tok string) bool {
+	if a.isSigned(tok) {
+		if c, err := token.Parse(a.signing, tok); err == nil {
+			return c.Prot
+		}
+	}
+	return false
+}
+
 // CheckSubdomain enforces reservation rules for a requested subdomain.
 func (a *Authenticator) CheckSubdomain(tok, requested string) error {
 	if a.isSigned(tok) {

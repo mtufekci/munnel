@@ -12,6 +12,7 @@ type Config struct {
 	ServerAddr  string // control server "host:port", e.g. "tunnels.example.com:7001"
 	Subdomain   string // requested subdomain; "" = server picks
 	Token       string // auth token for protected servers
+	Protect     bool   // opt the tunnel into forward-auth (viewers must log in)
 	Inspect     bool   // run the web inspector
 	InspectAddr string // inspector listen addr, default ":4040"
 	MaxBody     int64  // per-request body cap in bytes (matches server side)

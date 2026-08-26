@@ -27,6 +27,7 @@ type Hello struct {
 	Version   int    `json:"version"`
 	Token     string `json:"token,omitempty"`
 	Subdomain string `json:"subdomain,omitempty"` // requested; "" = server picks
+	Protected bool   `json:"protected,omitempty"` // opt the tunnel into forward-auth
 }
 
 // Ack is the server's reply. On failure OK is false and Error is populated.

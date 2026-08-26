@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mtufekci/munnel/internal/forwardauth"
 	"github.com/mtufekci/munnel/internal/proto"
 )
 
@@ -79,6 +80,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("no client is connected for %s.%s", sub, s.cfg.Domain))
 		return
 	}
+
+	// Forward-auth management paths (login form, auth submit, logout) live on
+	// the subdomain host so the session cookie is scoped to the tunnel.
+	if s.cfg.FA.Enabled() && strings.HasPrefix(r.URL.Path, "/__munnel/") {
+		s.cfg.FA.Handle(w, r)
+		return
+	}
+
+	// The identity headers are munnel-set, never viewer-set: strip them on
+	// every proxied request so a viewer cannot spoof X-Authenticated-User.
+	forwardauth.StripIdentityHeaders(r)
+
+	// A protected tunnel requires a valid session; otherwise redirect to the
+	// login flow. Authorize injects the identity header on success.
+	if c.Protected && s.cfg.FA.Enabled() {
+		if !s.cfg.FA.Authorize(w, r) {
+			return
+		}
+	}
+
 	s.proxyTo(w, r, c)
 }
 

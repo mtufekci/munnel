@@ -160,6 +160,7 @@ func (t *Tunnel) connectOnce(ctx context.Context) error {
 		Version:   proto.ControlVersion,
 		Token:     t.cfg.Token,
 		Subdomain: t.cfg.Subdomain,
+		Protected: t.cfg.Protect,
 	}
 	if err := json.NewEncoder(conn).Encode(hello); err != nil {
 		return fmt.Errorf("handshake write: %w", err)

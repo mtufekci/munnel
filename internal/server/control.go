@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/mtufekci/munnel/internal/forwardauth"
 	"github.com/mtufekci/munnel/internal/mux"
 	"github.com/mtufekci/munnel/internal/proto"
 )
@@ -29,6 +30,7 @@ type Config struct {
 	PublicScheme   string // scheme shown in public URLs ("https" behind Caddy/Cloudflare)
 	MaxRequestBody int64  // per-request body cap in bytes
 	Auth           *Authenticator
+	FA             *forwardauth.Manager // nil = forward-auth disabled server-wide
 	Logger         *log.Logger
 }
 
@@ -191,6 +193,15 @@ func (s *Server) handleControlConn(conn net.Conn) error {
 		return s.reject(conn, err.Error())
 	}
 
+	// Forward-auth: a tunnel is protected if the client opted in (--protect)
+	// or the signed token mandates it (prot claim). A protected tunnel on a
+	// server with no auth provider configured is a misconfiguration — reject
+	// rather than silently serve it unauthenticated.
+	protected := hello.Protected || s.cfg.Auth.ProtectedByToken(hello.Token)
+	if protected && !s.cfg.FA.Enabled() {
+		return s.reject(conn, "tunnel protection requested but server has no auth provider configured")
+	}
+
 	sess := mux.NewServerSession(conn, br) // br may hold post-JSON bytes
 	client := &Client{}
 	for range 100 {
@@ -211,6 +222,7 @@ func (s *Server) handleControlConn(conn net.Conn) error {
 	if client.Session == nil {
 		return s.reject(conn, "could not allocate a subdomain")
 	}
+	client.Protected = protected
 
 	ack := proto.Ack{
 		Type:      proto.TypeAck,

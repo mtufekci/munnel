@@ -14,6 +14,7 @@ type Client struct {
 	Session     *mux.Session
 	RemoteAddr  string
 	ConnectedAt time.Time
+	Protected   bool // forward-auth required to view this tunnel
 }
 
 // Registry is a thread-safe subdomain → client map.

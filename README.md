@@ -54,6 +54,9 @@ spirit: your server, your domain, your tokens.
 
 - claim predictable subdomains with `-s/--subdomain`
 - optional shared token auth (`--auth-tokens`) and per-token reserved subdomains (`--auth-file`)
+- HMAC-signed scoped tokens with expiry + revocation (no server-side token list)
+- **zero-trust tunnels** — `--protect` requires viewer login; munnel injects a
+  trusted `X-Authenticated-User` header the local service can rely on
 - 100 % self-hosted; no external telemetry
 
 ---
@@ -176,6 +179,37 @@ joins or leaves. revoke by adding the token id (printed by `mint`) to
 `revoked.txt` and restarting. signed and static tokens coexist on the same
 server.
 
+#### forward-auth (zero-trust) tunnels
+
+a protected tunnel requires a viewer to log in before any request reaches your
+local service — useful for staging sites, internal tools, or preview URLs you
+only want your team to see. munnel gates the tunnel at the proxy and, after
+login, injects a trusted `X-Authenticated-User` header (and optional
+`X-Authenticated-Groups`) that your app can read directly. viewers cannot
+spoof these headers: munnel strips them from every incoming request before it
+ever sets them.
+
+```bash
+# 1. server: enable the stub auth provider (dev/test — trusts any submitted user)
+munnel-server --domain tunnels.example.com --auth-stub \
+  --session-key-file session.key
+
+# 2. client: opt the tunnel into protection
+munnel 3000 -s staging --protect --server tunnels.example.com:7001
+
+# 3. viewers hit https://staging.tunnels.example.com → redirected to a login
+#    form → after login, their session cookie authorizes access and your app
+#    sees X-Authenticated-User: <whoever they entered>
+```
+
+the session cookie is HMAC-signed (`s1.` prefix, same family as signed tokens)
+and scoped to the tunnel subdomain. `--auth-stub` is **dev/test only** — it
+trusts any username a viewer types. a real OIDC provider is the production
+path (the `forwardauth.Provider` interface is the integration point). a tunnel
+can also be forced into protection by its signed token: `munnel-server mint
+--protect` mints a token whose `prot` claim mandates forward-auth regardless of
+the client's `--protect` flag.
+
 ---
 
 ## CLI reference
@@ -192,6 +226,7 @@ server.
 | `--inspect` | `true` | run the web inspector |
 | `--inspect-addr` | `:4040` | inspector listen address |
 | `--max-body-mb` | `32` | max request body in megabytes |
+| `--protect` | `false` | require viewer login (forward-auth) on this tunnel |
 
 every flag above can also be set from a config file or environment variable, so
 day-to-day usage is just `munnel <port> -s <subdomain>`:
@@ -222,6 +257,8 @@ address and token.
 | `--auth-file` | `""` | JSON file mapping tokens → reserved subdomains |
 | `--signing-key-file` | `""` | file with the HMAC key for signed, scoped tokens (or `$MUNNEL_SIGNING_KEY`) |
 | `--revoked-file` | `""` | file of revoked signed-token ids (one per line); reload requires restart |
+| `--auth-stub` | `false` | enable the stub forward-auth provider (dev/test only — trusts any user; **not for production**) |
+| `--session-key-file` | `""` | HMAC key for forward-auth session cookies (or `$MUNNEL_SESSION_KEY`; ephemeral if unset with `--auth-stub`) |
 | `--public-scheme` | `http` | URL scheme (use `https` behind Caddy/Cloudflare) |
 | `--public-port` | `""` | port in generated URLs (defaults to the proxy port; set `443` behind a TLS proxy so clients see clean `https://sub.domain` URLs) |
 | `--max-body-mb` | `32` | max request body in megabytes |
@@ -371,6 +408,7 @@ munnel/
 │   │   ├── proxy.go            # public HTTP ingress + request/WebSocket relay
 │   │   └── landing.go          # landing page on the bare domain
 │   ├── token/token.go          # signed, scoped tunnel tokens (HMAC-SHA256)
+│   ├── forwardauth/forwardauth.go  # zero-trust: session cookies, identity injection, login flow
 │   ├── client/
 │   │   ├── config.go           # client settings
 │   │   ├── tunnel.go           # reconnect loop, session wiring, events

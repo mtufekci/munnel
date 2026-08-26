@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mtufekci/munnel/internal/forwardauth"
 	"github.com/mtufekci/munnel/internal/server"
 	"github.com/mtufekci/munnel/internal/token"
 )
@@ -39,6 +42,8 @@ func run() int {
 	authFile := fs.String("auth-file", "", "JSON file mapping tokens to reserved subdomains")
 	signingKeyFile := fs.String("signing-key-file", "", "file containing the HMAC key for signed, scoped tokens (or $MUNNEL_SIGNING_KEY)")
 	revokedFile := fs.String("revoked-file", "", "file of revoked signed-token IDs (one per line); reload requires restart")
+	authStub := fs.Bool("auth-stub", false, "enable the stub forward-auth provider (dev/test only — trusts any user; do NOT use in production)")
+	sessionKeyFile := fs.String("session-key-file", "", "file with the HMAC key for forward-auth session cookies (or $MUNNEL_SESSION_KEY; ephemeral if unset with --auth-stub)")
 	scheme := fs.String("public-scheme", "http", "scheme in generated URLs (use \"https\" behind a TLS proxy like Caddy)")
 	publicPort := fs.String("public-port", "", "port in generated URLs (defaults to the proxy port; set \"443\" behind a TLS proxy)")
 	maxBodyMB := fs.Int("max-body-mb", 32, "max request body in megabytes")
@@ -82,6 +87,20 @@ flags:
 		return 2
 	}
 
+	// Forward-auth: only the stub provider is wired here (dev/test). A real
+	// OIDC provider is a future flag; the forwardauth.Manager is left nil
+	// (disabled) unless --auth-stub is set.
+	var fa *forwardauth.Manager
+	if *authStub {
+		sessKey, err := loadSessionKey(*sessionKeyFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "munnel-server: %v\n", err)
+			return 2
+		}
+		fa = forwardauth.NewManager(sessKey, forwardauth.StubProvider{}, 7*24*time.Hour)
+		fmt.Fprintln(os.Stderr, "warning: --auth-stub trusts any submitted user — dev/test only, not for production")
+	}
+
 	srv, err := server.New(server.Config{
 		Domain:         *domain,
 		ControlAddr:    *controlAddr,
@@ -90,6 +109,7 @@ flags:
 		PublicScheme:   *scheme,
 		MaxRequestBody: int64(*maxBodyMB) << 20,
 		Auth:           auth,
+		FA:             fa,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "munnel-server: %v\n", err)
@@ -126,6 +146,34 @@ func loadSigningKey(path string) ([]byte, error) {
 	return nil, nil
 }
 
+// loadSessionKey resolves the forward-auth session key from --session-key-file
+// or $MUNNEL_SESSION_KEY. If neither is set it generates an ephemeral key (so
+// --auth-stub works out of the box for dev), with the caveat that sessions do
+// not survive a restart.
+func loadSessionKey(path string) ([]byte, error) {
+	if path != "" {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("session key file: %w", err)
+		}
+		k := strings.TrimSpace(string(b))
+		if k == "" {
+			return nil, errors.New("session key file is empty")
+		}
+		return []byte(k), nil
+	}
+	if v := strings.TrimSpace(os.Getenv("MUNNEL_SESSION_KEY")); v != "" {
+		return []byte(v), nil
+	}
+	// Ephemeral key: fine for dev/test, but sessions are lost on restart.
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return nil, fmt.Errorf("generate session key: %w", err)
+	}
+	fmt.Fprintln(os.Stderr, "warning: no --session-key-file set; using an ephemeral session key (sessions will not survive restart)")
+	return []byte(hex.EncodeToString(b)), nil
+}
+
 // runMint implements `munnel-server mint`: signs a scoped token and prints it
 // (plus its ID, for the revoke list) to stdout.
 func runMint(args []string) int {
@@ -133,6 +181,7 @@ func runMint(args []string) int {
 	fs.SetOutput(os.Stderr)
 	sub := fs.String("sub", "", "subdomain this token is scoped to (empty = any free subdomain)")
 	ttl := fs.Duration("ttl", 0, "token lifetime (e.g. 24h, 7d); 0 = never expires")
+	prot := fs.Bool("protect", false, "mandate forward-auth on the tunnel this token opens")
 	keyFile := fs.String("key-file", "", "file containing the HMAC signing key (or $MUNNEL_SIGNING_KEY)")
 	_ = fs.Parse(args)
 
@@ -146,7 +195,7 @@ func runMint(args []string) int {
 		return 2
 	}
 
-	tok, err := token.Mint(key, *sub, *ttl)
+	tok, err := token.MintWith(key, token.MintOpts{Sub: *sub, TTL: *ttl, Prot: *prot})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mint: %v\n", err)
 		return 1
@@ -158,6 +207,9 @@ func runMint(args []string) int {
 		fmt.Printf("expires: %s\n", time.Now().Add(*ttl).UTC().Format(time.RFC3339))
 	} else {
 		fmt.Println("expires: never")
+	}
+	if *prot {
+		fmt.Println("protect: forward-auth mandated on this tunnel")
 	}
 	fmt.Println("\nTo revoke, add the token id above to --revoked-file and restart.")
 	return 0

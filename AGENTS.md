@@ -71,8 +71,13 @@ internal/
     server.go     # inspection web UI (:4040) — replay requests, bodies; RWMutex-guarded ln
   token/
     token.go      # signed, scoped tunnel tokens (HMAC-SHA256); Mint/Parse/IDOf
+  forwardauth/
+    forwardauth.go # zero-trust: session cookies, identity header injection, login flow
 integration/
   shutdown_test.go # regression tests: real in-process server+client, ctx shutdown
+  websocket_test.go # WebSocket tunnel end-to-end (hijack → raw pipe)
+  token_auth_test.go # signed + static token auth, scoped subdomains
+  forwardauth_test.go # protected tunnels: redirect, login flow, header injection, spoof stripping
 docs/
   OPERATIONS.md   # operator runbook: deploy, SSH, logs, token rotation, hardening, teardown
 deploy/
@@ -131,6 +136,23 @@ install-dev.sh    # dev: build client, write ~/.munnel/config (token via --token
   `Upgrade`/`Connection`/`Sec-WebSocket-*` are load-bearing for the handshake.
   Regression test: `integration/websocket_test.go` (verified to fail with
   `status=501` when the hijack path is removed).
+- **Forward-auth / zero-trust** (`internal/forwardauth`): a tunnel is protected
+  when the client passes `--protect` **or** its signed token carries `prot:true`
+  (minted with `munnel-server mint --protect`). A protected tunnel requires a
+  viewer session before any request reaches the local service. The server's
+  `ServeHTTP` (in `proxy.go`) handles the `/__munnel/` login/auth/logout paths
+  on the subdomain host, **always** strips `X-Authenticated-User` /
+  `X-Authenticated-Groups` from incoming requests (so viewers can't spoof them),
+  then calls `Authorize` which validates the session cookie and injects the
+  identity headers on success. The session cookie is HMAC-signed (`s1.` prefix,
+  same family as signed tokens) and scoped to the tunnel subdomain. The only
+  wired provider is `StubProvider` (gated behind `--auth-stub`, dev/test only —
+  it trusts any submitted user); a real OIDC provider implements the
+  `forwardauth.Provider` interface. A protected tunnel on a server with no auth
+  provider enabled is **rejected at handshake** in `control.go`. Regression
+  tests: `internal/forwardauth/forwardauth_test.go` (unit) and
+  `integration/forwardauth_test.go` (end-to-end; verified to fail when the FA
+  block in `proxy.go` is removed).
 
 ## Conventions
 
@@ -157,6 +179,7 @@ install-dev.sh    # dev: build client, write ~/.munnel/config (token via --token
 | Change the mux wire format | `internal/mux/*.go` (both ends) | `go test -race ./internal/mux/... ./integration/...` |
 | Change server routing | `internal/server/control.go` | `integration/shutdown_test.go` + a manual round-trip |
 | Change token/auth logic | `internal/server/auth.go` + `internal/token/token.go` | `internal/token/token_test.go` + `integration/token_auth_test.go` |
+| Change forward-auth | `internal/forwardauth/forwardauth.go` + `proxy.go` ServeHTTP | `internal/forwardauth/forwardauth_test.go` + `integration/forwardauth_test.go` |
 | Add a cloud provider | new `deploy/<provider>/deploy.sh` sourcing `deploy/lib.sh` + an IaC file | dry-run the provision, then a real deploy |
 | Rotate the dev token | on the VM: `docs/OPERATIONS.md` § token rotation | client reconnects with the new token |
 | Add an inspection feature | `internal/inspection/server.go` | `go test -race ./internal/inspection/...` |

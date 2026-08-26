@@ -60,17 +60,21 @@ func TestParse_TamperedPayload(t *testing.T) {
 func TestParse_TamperedSignature(t *testing.T) {
 	key := []byte("k")
 	tok, _ := Mint(key, "alice", 0)
-	// Corrupt the signature segment: replace its last char with a different
-	// valid base64url char so it still decodes but won't match.
+	// Corrupt the signature segment. We flip the FIRST char, not the last:
+	// a 32-byte HMAC encodes to 43 base64url chars, and the final char's low
+	// 2 bits are padding that Go's decoder ignores — so tampering the last
+	// char can leave the decoded bytes (and thus hmac.Equal) unchanged. The
+	// first char always maps into the first decoded byte, so any change is
+	// observable.
 	body := tok[len(Prefix):]
 	dot := strings.IndexByte(body, '.')
 	sig := body[dot+1:]
-	last := sig[len(sig)-1]
+	first := sig[0]
 	alt := byte('A')
-	if last == 'A' {
+	if first == 'A' {
 		alt = 'B'
 	}
-	body = body[:dot+1] + sig[:len(sig)-1] + string(alt)
+	body = body[:dot+1] + string(alt) + sig[1:]
 	if _, err := Parse(key, Prefix+body); err == nil {
 		t.Fatal("Parse accepted a tampered signature")
 	}
