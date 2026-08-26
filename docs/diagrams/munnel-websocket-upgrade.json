@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "WebSocket Upgrade Through the Tunnel",
+    "output": "munnel-websocket-upgrade.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [
+      1080,
+      600
+    ]
+  },
+  "participants": [
+    {
+      "id": "browser",
+      "type": "external",
+      "label": "Browser",
+      "sublabel": "public internet"
+    },
+    {
+      "id": "proxy",
+      "type": "backend",
+      "label": "munnel-server",
+      "sublabel": "proxy :8080"
+    },
+    {
+      "id": "stream",
+      "type": "messagebus",
+      "label": "mux stream",
+      "sublabel": "on TCP :7001"
+    },
+    {
+      "id": "client",
+      "type": "backend",
+      "label": "munnel",
+      "sublabel": "client + forwarder"
+    },
+    {
+      "id": "localsvc",
+      "type": "backend",
+      "label": "your app",
+      "sublabel": "localhost:3000"
+    },
+    {
+      "id": "inspector",
+      "type": "frontend",
+      "label": "inspector",
+      "sublabel": ":4040"
+    }
+  ],
+  "segments": [
+    {
+      "from": 160,
+      "to": 445,
+      "label": "Upgrade handshake"
+    },
+    {
+      "from": 452,
+      "to": 532,
+      "label": "Raw pipe (protocol-agnostic)"
+    }
+  ],
+  "messages": [
+    {
+      "id": "upgrade-request",
+      "from": "browser",
+      "to": "proxy",
+      "y": 185,
+      "label": "GET /chat \u00b7 Upgrade: websocket",
+      "variant": "emphasis",
+      "note": "isUpgrade hijacks the conn \u2014 no framing path"
+    },
+    {
+      "id": "open-handshake",
+      "from": "proxy",
+      "to": "stream",
+      "y": 212,
+      "label": "OPEN \u00b7 metadata, then handshake bytes verbatim",
+      "variant": "default"
+    },
+    {
+      "id": "handshake-to-client",
+      "from": "stream",
+      "to": "client",
+      "y": 239,
+      "label": "DATA \u00b7 same stream id",
+      "variant": "emphasis"
+    },
+    {
+      "id": "handshake-to-app",
+      "from": "client",
+      "to": "localsvc",
+      "y": 266,
+      "label": "GET /chat HTTP/1.1 \u00b7 Sec-WebSocket-* kept",
+      "variant": "default"
+    },
+    {
+      "id": "switching-protocols",
+      "from": "localsvc",
+      "to": "client",
+      "y": 296,
+      "label": "101 Switching Protocols",
+      "variant": "return"
+    },
+    {
+      "id": "tee-handshake",
+      "from": "client",
+      "to": "inspector",
+      "y": 326,
+      "label": "tee: the 101 handshake only",
+      "variant": "dashed",
+      "note": "WS frames are never captured"
+    },
+    {
+      "id": "switching-to-stream",
+      "from": "client",
+      "to": "stream",
+      "y": 354,
+      "label": "DATA \u00b7 101 response",
+      "variant": "default"
+    },
+    {
+      "id": "switching-relay",
+      "from": "stream",
+      "to": "proxy",
+      "y": 381,
+      "label": "DATA",
+      "variant": "default"
+    },
+    {
+      "id": "upgrade-done",
+      "from": "proxy",
+      "to": "browser",
+      "y": 408,
+      "label": "101 \u00b7 conn hijacked \u21c4 stream",
+      "variant": "return"
+    },
+    {
+      "id": "ws-frame-out",
+      "from": "browser",
+      "to": "proxy",
+      "y": 437,
+      "label": "WS frame \u2192 any size",
+      "variant": "emphasis"
+    },
+    {
+      "id": "pipe-copy",
+      "from": "proxy",
+      "to": "stream",
+      "y": 465,
+      "label": "io.Copy \u21c4 raw bytes, no re-framing",
+      "variant": "emphasis"
+    },
+    {
+      "id": "pipe-to-client",
+      "from": "stream",
+      "to": "client",
+      "y": 491,
+      "label": "DATA",
+      "variant": "default"
+    },
+    {
+      "id": "pipe-to-app",
+      "from": "client",
+      "to": "localsvc",
+      "y": 517,
+      "label": "frame delivered untouched",
+      "variant": "emphasis"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "proxy",
+      "from": 180,
+      "to": 522,
+      "type": "backend"
+    },
+    {
+      "participant": "stream",
+      "from": 207,
+      "to": 519,
+      "type": "messagebus"
+    },
+    {
+      "participant": "client",
+      "from": 235,
+      "to": 522,
+      "type": "backend"
+    },
+    {
+      "participant": "localsvc",
+      "from": 262,
+      "to": 520,
+      "type": "backend"
+    },
+    {
+      "participant": "inspector",
+      "from": 322,
+      "to": 332,
+      "type": "frontend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Hijack, Don't Frame",
+      "items": [
+        "Upgrade requests skip the request/response framing path entirely",
+        "The public conn is hijacked and piped raw over one mux stream",
+        "Two io.Copy goroutines: browser \u2194 stream \u2194 your app; either side closing ends both"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Handshake Survives Verbatim",
+      "items": [
+        "Upgrade/Connection + Sec-WebSocket-* headers replayed byte-for-byte",
+        "Pre-buffered bytes from the handshake are drained onto the stream first",
+        "Protocol-agnostic after 101 \u2014 h2c and other upgrades ride too"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Inspector Boundary",
+      "items": [
+        "The inspector records only the 101 handshake",
+        "Individual WS frames are never captured \u2014 arbitrary length, bidirectional",
+        "Handshakes can't be meaningfully replayed; raw TCP (DBs, SSH) is not carried at all"
+      ]
+    }
+  ]
+}

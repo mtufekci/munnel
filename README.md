@@ -23,6 +23,7 @@ spirit: your server, your domain, your tokens.
 - [self-hosting in production](#self-hosting-in-production)
 - [managed Azure deployment](#managed-azure-deployment)
 - [how multiplexing works](#how-multiplexing-works)
+  - [websocket and upgrade tunnels](#websocket-and-upgrade-tunnels)
 - [limitations](#limitations)
 - [project structure](#project-structure)
 
@@ -326,6 +327,12 @@ on-demand TLS, Log Analytics + alerts, and an operator runbook (SSH access,
 token rotation, redeploy, troubleshooting). the `docker-compose.yml` and
 `approve.py` in this repo are the shape that deployment runs.
 
+redeploys can be triggered manually from the **Actions** tab via the `Deploy
+server` workflow (`.github/workflows/deploy-server.yml`) — it ships the source
+to the VM, rebuilds the Docker image, runs a health check, and never touches
+the live `.env` secrets. see the runbook §6 for the required repository
+secrets.
+
 ---
 
 ## how multiplexing works
@@ -368,15 +375,33 @@ the control handshake happens before the first binary frame: one JSON `hello`
 (token, requested subdomain) and one JSON `ack` (assigned public URL), then
 the socket switches to binary frames exclusively.
 
+### websocket and upgrade tunnels
+
+requests carrying `Connection: Upgrade` (WebSocket, h2c, etc.) skip the framed
+request/response path entirely — the server hijacks the public connection and
+pipes it raw over one mux stream:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/websocket-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/diagrams/websocket-light.png">
+  <img alt="WebSocket upgrade lifecycle: handshake replayed verbatim over a mux stream, then raw bidirectional pipe end-to-end" src="docs/diagrams/websocket-dark.png">
+</picture>
+
+**[interactive version](docs/diagrams/munnel-websocket-upgrade.html)** — see the hijack boundary and where capture stops
+
+- the upgrade handshake (including `Sec-WebSocket-*` headers) is replayed
+  verbatim; the local app sees the request exactly as the browser sent it
+- after `101 Switching Protocols`, two `io.Copy` goroutines shuttle raw bytes
+  in both directions — arbitrary frame sizes, no re-framing, no buffering caps
+- the inspector records only the `101` handshake; individual WS frames are not
+  captured and upgrade requests cannot be replayed
+
 ---
 
 ## limitations
 
-- **HTTP(S) + WebSocket only.** raw TCP tunnels (databases, ssh) are not carried.
-- WebSocket upgrades are hijacked into a raw bidirectional pipe through the
-  tunnel — frames flow end-to-end in both directions. The inspector records
-  the `101 Switching Protocols` handshake but does not capture individual WS
-  frames (they are arbitrary-length and bidirectional).
+- **HTTP(S) + WebSocket only.** raw TCP tunnels (databases, ssh) are not carried
+  — there is no HTTP handshake to bootstrap them.
 - request bodies are buffered up to `--max-body-mb` on both ends; responses
   stream without a cap.
 - inspector capture is truncated at 256 KiB per body for display (proxying is
@@ -430,5 +455,6 @@ munnel/
     ├── OPERATIONS.md           # managed Azure deployment + operator runbook
     └── diagrams/               # archify diagrams (HTML viewer + dark/light PNG exports)
         ├── munnel-architecture.*      # tunnel topology
-        └── munnel-request-lifecycle.* # frame-level request lifecycle
+        ├── munnel-request-lifecycle.* # frame-level request lifecycle
+        └── munnel-websocket-upgrade.* # WS upgrade hijack + raw pipe
 ```
