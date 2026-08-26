@@ -414,27 +414,36 @@ pipes it raw over one mux stream:
 ```
 munnel/
 ├── cmd/
-│   ├── client/main.go          # munnel — CLI entry point
-│   └── server/main.go          # munnel-server — CLI entry point
+│   ├── client/
+│   │   ├── main.go             # munnel — CLI entry point
+│   │   ├── defaults.go         # ~/.munnel/config + MUNNEL_* env defaults (flag > env > config > builtin)
+│   │   └── defaults_test.go    # config parsing, env-over-config precedence, edge cases
+│   └── server/
+│       └── main.go             # munnel-server — CLI entry point (flags, mint subcommand)
 ├── internal/
 │   ├── mux/                    # 9-byte binary multiplexer
 │   │   ├── frame.go            #   wire format encode/decode
 │   │   ├── session.go          #   session manager, heartbeat, dispatch
 │   │   ├── stream.go           #   per-stream net.Conn implementation
 │   │   └── mux_test.go         #   unit + concurrency tests (-race clean)
-│   ├── proto/message.go        # handshake wire messages, subdomain rules
+│   ├── proto/
+│   │   └── message.go          # handshake wire messages, subdomain rules
 │   ├── server/
 │   │   ├── auth.go             # token auth (static + signed) + reserved subdomains
 │   │   ├── control.go          # control listener, handshake, registration
 │   │   ├── registry.go         # thread-safe subdomain → tunnel registry
-│   │   ├── proxy.go            # public HTTP ingress + request/WebSocket relay
+│   │   ├── proxy.go            # public HTTP ingress + request/WebSocket relay + forward-auth
 │   │   └── landing.go          # landing page on the bare domain
-│   ├── token/token.go          # signed, scoped tunnel tokens (HMAC-SHA256)
-│   ├── forwardauth/forwardauth.go  # zero-trust: session cookies, identity injection, login flow
+│   ├── token/
+│   │   ├── token.go            # signed, scoped tunnel tokens (HMAC-SHA256); Mint/Parse/IDOf
+│   │   └── token_test.go       # token signing, parsing, tamper/expiry rejection
+│   ├── forwardauth/
+│   │   ├── forwardauth.go      # zero-trust: session cookies, identity injection, login flow
+│   │   └── forwardauth_test.go # session cookie sign/verify, header stripping, spoof rejection
 │   ├── client/
 │   │   ├── config.go           # client settings
 │   │   ├── tunnel.go           # reconnect loop, session wiring, events
-│   │   └── forwarder.go        # localhost dispatcher + traffic capture
+│   │   └── forwarder.go        # localhost dispatcher + traffic capture + WebSocket relay
 │   ├── inspection/
 │   │   ├── store.go            # ring buffer of captured exchanges
 │   │   ├── hub.go              # websocket fan-out to inspector tabs
@@ -443,20 +452,39 @@ munnel/
 │   └── tui/
 │       ├── tui.go / model.go   # bubble tea dashboard
 │       └── styles.go           # palette
+├── integration/                # end-to-end tests (real in-process server + client)
+│   ├── e2e_test.go             # basic tunnel round-trip
+│   ├── shutdown_test.go        # ctx shutdown (idle + mid-stream) — verified to fail with fix reverted
+│   ├── websocket_test.go       # WebSocket tunnel end-to-end (hijack → raw pipe)
+│   ├── token_auth_test.go      # signed + static token auth, scoped subdomains
+│   └── forwardauth_test.go     # protected tunnels: redirect, login, header injection, spoof stripping
+├── deploy/                     # cross-provider provisioning scripts
+│   ├── README.md               # deploy guide (why scp, provider prerequisites)
+│   ├── cloud-init.yaml         # portable user-data (Docker + .env + systemd unit)
+│   ├── lib.sh                  # shared deploy helpers (render_user_data, wait_ssh, ship_and_start)
+│   ├── azure/                  # Bicep (main.bicep) + deploy.sh
+│   ├── aws/                    # CloudFormation (cloudformation.yaml) + deploy.sh
+│   ├── gcp/                    # deploy.sh (gcloud)
+│   ├── digitalocean/           # deploy.sh (doctl)
+│   └── hetzner/                # deploy.sh (hcloud)
+├── .github/workflows/
+│   └── deploy-server.yml       # manual workflow_dispatch: test + deploy via self-hosted runner on the Azure VM
+├── docs/
+│   ├── OPERATIONS.md           # managed Azure deployment + operator runbook
+│   ├── images/                 # README screenshots (inspector + terminal TUI)
+│   └── diagrams/               # archify diagrams (HTML viewer + dark/light PNG exports)
+│       ├── munnel-architecture.*      # tunnel topology
+│       ├── munnel-request-lifecycle.* # frame-level request lifecycle
+│       └── munnel-websocket-upgrade.* # WS upgrade hijack + raw pipe
 ├── Dockerfile                  # multi-stage server image (scratch)
 ├── docker-compose.yml          # production shape: server + caddy + ask (TLS)
 ├── approve.py                  # caddy on-demand TLS permission endpoint
 ├── Caddyfile.example           # on-demand TLS reverse proxy template
-├── .env.example                # MUNNEL_DOMAIN / MUNNEL_TOKENS / MUNNEL_SCHEME
+├── .env.example                # MUNNEL_DOMAIN / MUNNEL_TOKENS / MUNNEL_SCHEME / signing key / auth stub
 ├── Makefile                    # build / test / cross-compile
 ├── install.sh                  # source installer (builds client + server)
 ├── install-dev.sh              # one-command dev setup for a managed server
-├── .github/workflows/
-│   └── deploy-server.yml       # manual workflow_dispatch: test + deploy via self-hosted runner on the Azure VM
-└── docs/
-    ├── OPERATIONS.md           # managed Azure deployment + operator runbook
-    └── diagrams/               # archify diagrams (HTML viewer + dark/light PNG exports)
-        ├── munnel-architecture.*      # tunnel topology
-        ├── munnel-request-lifecycle.* # frame-level request lifecycle
-        └── munnel-websocket-upgrade.* # WS upgrade hijack + raw pipe
+├── go.mod / go.sum             # module github.com/mtufekci/munnel, Go 1.25
+├── AGENTS.md                   # AI agent orientation (repo map, conventions, invariants)
+└── README.md
 ```
