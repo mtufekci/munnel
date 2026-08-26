@@ -69,6 +69,8 @@ internal/
     *.go          # 9-byte-binary multiplexer protocol (frame codec, streams)
   inspection/
     server.go     # inspection web UI (:4040) — replay requests, bodies; RWMutex-guarded ln
+  token/
+    token.go      # signed, scoped tunnel tokens (HMAC-SHA256); Mint/Parse/IDOf
 integration/
   shutdown_test.go # regression tests: real in-process server+client, ctx shutdown
 docs/
@@ -108,6 +110,15 @@ install-dev.sh    # dev: build client, write ~/.munnel/config (token via --token
 - **On-demand TLS gate**: Caddy calls `ask http://ask:8080/check` before issuing
   any subdomain cert. `approve.py` approves only subdomains with a connected,
   token-valid tunnel. Without this, anyone could mint certs for your domain.
+- **Two token kinds, one Authenticator**: static tokens (CSV/JSON, server holds
+  the list) and signed tokens (HMAC-SHA256, package `token`, self-describing
+  subdomain + expiry). A token starting with `m1.` is signed; anything else is
+  treated as static. They coexist — don't make one path exclude the other. A
+  signed token's `sub` claim overrides the client's requested subdomain (same
+  as a static reserved token), so scoping is enforced by assignment, not
+  rejection. Revocation is by token ID in `--revoked-file`, loaded once at
+  startup. `munnel-server mint` signs tokens; the signing key never leaves the
+  server.
 - **`--public-port`**: the server reports `https://<sub>.<domain>` (not `:8080`)
   because it runs behind Caddy on 443. Don't remove this flag or client URLs
   will show an internal port.
@@ -145,6 +156,7 @@ install-dev.sh    # dev: build client, write ~/.munnel/config (token via --token
 | Add a client flag | `cmd/client/main.go` (+ `defaults.go` if it should have a config/env default) | `cmd/client/defaults_test.go`, build client |
 | Change the mux wire format | `internal/mux/*.go` (both ends) | `go test -race ./internal/mux/... ./integration/...` |
 | Change server routing | `internal/server/control.go` | `integration/shutdown_test.go` + a manual round-trip |
+| Change token/auth logic | `internal/server/auth.go` + `internal/token/token.go` | `internal/token/token_test.go` + `integration/token_auth_test.go` |
 | Add a cloud provider | new `deploy/<provider>/deploy.sh` sourcing `deploy/lib.sh` + an IaC file | dry-run the provision, then a real deploy |
 | Rotate the dev token | on the VM: `docs/OPERATIONS.md` § token rotation | client reconnects with the new token |
 | Add an inspection feature | `internal/inspection/server.go` | `go test -race ./internal/inspection/...` |

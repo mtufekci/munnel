@@ -112,7 +112,12 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	mode := "open (no auth)"
 	if !s.cfg.Auth.Open() {
-		mode = fmt.Sprintf("token auth (%d token%s)", len(s.cfg.Auth.tokens), plural(len(s.cfg.Auth.tokens)))
+		n := s.cfg.Auth.StaticTokenCount()
+		mode = fmt.Sprintf("token auth (%d static token%s", n, plural(n))
+		if s.cfg.Auth.SignedEnabled() {
+			mode += " + signed tokens"
+		}
+		mode += ")"
 	}
 	s.log.Printf("munnel-server up — domain=%s control=%s proxy=%s auth=%s",
 		s.cfg.Domain, s.controlLn.Addr(), s.proxyLn.Addr(), mode)

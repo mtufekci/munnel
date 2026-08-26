@@ -146,6 +146,36 @@ or bind tokens to reserved subdomains with an auth file:
 munnel-server --domain tunnels.example.com --auth-file auth.json
 ```
 
+#### signed, scoped tokens
+
+for per-developer tokens with expiry and revocation — without the server
+holding a list of every token — use HMAC-signed tokens. generate a signing
+key once, mint tokens for each dev, and revoke by id:
+
+```bash
+# 1. generate a signing key (once)
+openssl rand -hex 32 > signing.key
+
+# 2. mint a token scoped to the "alice" subdomain, valid 24h
+munnel-server mint --sub alice --ttl 24h --key-file signing.key
+#   token: tok_a1b2c3d4e5f6a7b8
+#   m1.<payload>.<signature>
+#   expires: 2026-08-27T15:40:00Z
+
+# 3. run the server with the signing key (+ optional revocation list)
+munnel-server --domain tunnels.example.com \
+  --signing-key-file signing.key --revoked-file revoked.txt
+
+# 4. the dev connects with their signed token
+munnel 3000 -s alice -t m1.<...> --server tunnels.example.com:7001
+```
+
+a signed token carries its own subdomain claim and expiry — the server
+verifies the signature, so you don't redistribute a token list when someone
+joins or leaves. revoke by adding the token id (printed by `mint`) to
+`revoked.txt` and restarting. signed and static tokens coexist on the same
+server.
+
 ---
 
 ## CLI reference
@@ -190,6 +220,8 @@ address and token.
 | `--proxy-addr` | `:8080` | public HTTP ingress address |
 | `--auth-tokens` | `""` | comma-separated valid client tokens |
 | `--auth-file` | `""` | JSON file mapping tokens → reserved subdomains |
+| `--signing-key-file` | `""` | file with the HMAC key for signed, scoped tokens (or `$MUNNEL_SIGNING_KEY`) |
+| `--revoked-file` | `""` | file of revoked signed-token ids (one per line); reload requires restart |
 | `--public-scheme` | `http` | URL scheme (use `https` behind Caddy/Cloudflare) |
 | `--public-port` | `""` | port in generated URLs (defaults to the proxy port; set `443` behind a TLS proxy so clients see clean `https://sub.domain` URLs) |
 | `--max-body-mb` | `32` | max request body in megabytes |
@@ -333,11 +365,12 @@ munnel/
 │   │   └── mux_test.go         #   unit + concurrency tests (-race clean)
 │   ├── proto/message.go        # handshake wire messages, subdomain rules
 │   ├── server/
-│   │   ├── auth.go             # token auth + reserved subdomains
+│   │   ├── auth.go             # token auth (static + signed) + reserved subdomains
 │   │   ├── control.go          # control listener, handshake, registration
 │   │   ├── registry.go         # thread-safe subdomain → tunnel registry
-│   │   ├── proxy.go            # public HTTP ingress + request relay
+│   │   ├── proxy.go            # public HTTP ingress + request/WebSocket relay
 │   │   └── landing.go          # landing page on the bare domain
+│   ├── token/token.go          # signed, scoped tunnel tokens (HMAC-SHA256)
 │   ├── client/
 │   │   ├── config.go           # client settings
 │   │   ├── tunnel.go           # reconnect loop, session wiring, events
