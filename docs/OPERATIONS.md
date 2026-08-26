@@ -122,6 +122,54 @@ add `- --auth-file=/auth.json`, plus a volume `./auth.json:/auth.json:ro`.
 Then `docker compose up -d`. Each dev then gets a guaranteed subdomain and
 can't claim another's.
 
+### Signed, scoped tokens (no server-side token list)
+
+For per-dev tokens with expiry + revocation without holding a list of every
+token, use HMAC-signed tokens. The signing key is in `.env`
+(`MUNNEL_SIGNING_KEY`); the server picks it up automatically (no flag needed).
+Mint a token on the VM:
+
+```bash
+ssh munnel-dev 'cd /opt/munnel && docker compose exec -T munnel-server \
+  /munnel-server mint --sub alice --ttl 7d'
+#   token: tok_<id>
+#   m1.<payload>.<signature>
+#   expires: <date>
+```
+
+Give the dev the `m1....` string. They connect with
+`munnel 3000 -s alice -t m1....`. The token's `sub` claim overrides any
+requested subdomain, so scoping is enforced by assignment. Revoke by adding
+the token id (printed by `mint`) to a `--revoked-file` and restarting. Signed
+and static tokens coexist. To mandate forward-auth on a token's tunnel, mint
+with `--protect`:
+
+```bash
+docker compose exec -T munnel-server /munnel-server mint --sub staging --ttl 7d --protect
+```
+
+### Forward-auth (zero-trust) tunnels
+
+A protected tunnel requires a viewer to log in before any request reaches the
+dev's local service. The dev opts in with `--protect`:
+
+```bash
+munnel 3000 -s staging --protect
+```
+
+Viewers hit `https://staging.tunnels.momentumpay.xyz` → redirected to a login
+form → after login, a session cookie authorizes access and the dev's app sees
+`X-Authenticated-User: <whoever they entered>`. The header is always stripped
+from incoming requests first, so viewers can't spoof it.
+
+The dev server currently uses the **stub** provider (`MUNNEL_AUTH_STUB=true` in
+`.env`), which trusts any submitted username — **dev/test only**. It is gated
+to `--protect` tunnels only; regular tunnels are unaffected. A real OIDC
+provider is the production path (implement `forwardauth.Provider`); until then,
+do not rely on stub auth for anything sensitive. The session-cookie HMAC key is
+`MUNNEL_SESSION_KEY` in `.env` (ephemeral if unset, so sessions don't survive a
+restart — set it for stable sessions).
+
 ---
 
 ## 5. Connecting a dev tunnel
@@ -174,22 +222,32 @@ The server image is built on the VM from this repo's source. To deploy a
 change (after editing Go code, Dockerfile, compose, or Caddyfile):
 
 ```bash
-# from your laptop, sync changed files (or the whole tree)
+# from your laptop, ship the whole tree (excludes .env so live secrets survive)
 cd /Users/murattufekci/Repo/Munnel
-tar -czf /tmp/munnel-src.tgz --exclude=bin --exclude=dist --exclude=.git --exclude=.claude -C .. Munnel
-scp /tmp/munnel-src.tgz munnel-dev:/opt/munnel/
-ssh munnel-dev 'cd /opt/munnel && tar xzf munnel-src.tgz --strip-components=1 && rm munnel-src.tgz && \
-  # re-apply the live .env and Caddyfile if the tar overwrote them
-  docker compose up -d --build'
+tar -czf /tmp/munnel-src.tgz --exclude=bin --exclude=dist --exclude=.git \
+  --exclude=.claude --exclude=.env --exclude='*.tgz' -C . .
+scp /tmp/munnel-src.tgz munnel-dev:/tmp/munnel-src.tgz
+ssh munnel-dev 'set -e; cd /opt/munnel && tar xzf /tmp/munnel-src.tgz -C /opt/munnel \
+  && rm -f /tmp/munnel-src.tgz && cp Caddyfile.example Caddyfile \
+  && docker compose up -d --build && docker compose ps'
 ```
 
-If the tar overwrites `docker-compose.yml` / `Caddyfile` / `.env` (because the
-repo has its own versions), re-copy the live ones from `docs/OPERATIONS.md`
-references or keep a `/opt/munnel/live/` backup. Simpler: scp only the files
-that changed.
+The tar **excludes `.env`** so the live token + signing/session keys are never
+clobbered. `Caddyfile.example` is copied over `Caddyfile` (the established
+pattern — the template uses `{$MUNNEL_DOMAIN}` env substitution).
+
+> **`.env` newline caveat**: if you ever append vars to `/opt/munnel/.env`
+> manually (e.g. `echo "MUNNEL_SIGNING_KEY=..." >> .env`), first check the file
+> ends in a newline. If the last line has no trailing newline, the `>>` append
+> concatenates the new var onto the previous line (e.g.
+> `MUNNEL_SCHEME=httpsMUNNEL_SIGNING_KEY=...`), which makes the server
+> crash-loop on an invalid `--public-scheme`. Fix with
+> `sed -i 's/MUNNEL_SIGNING_KEY=/\nMUNNEL_SIGNING_KEY=/' .env` or just rewrite
+> the file. The block above does not touch `.env`, so this only bites manual
+> edits.
 
 ```bash
-# quick single-file deploy
+# quick single-file deploy (faster when only one file changed)
 scp internal/server/control.go munnel-dev:/opt/munnel/internal/server/control.go
 ssh munnel-dev 'cd /opt/munnel && docker compose up -d --build'
 ```
@@ -291,6 +349,7 @@ history). The source of truth is this repo.
 | `curl https://sub.tunnels...` → TLS error / no cert | First request triggers issuance (can take ~10-30s). Retry. Check `docker compose logs caddy` for `certificate obtained` or ask-endpoint 403s. |
 | `curl https://sub.tunnels...` → 502/504 | No tunnel registered for that subdomain, or the dev's local server is down. `docker compose logs munnel-server` shows `tunnel up/down`. |
 | Caddy restart-looping | Usually a Caddyfile parse error. `docker compose logs caddy` prints the line. `on_demand_tls` must have an `ask` URL (mandatory in Caddy v2.8+). |
+| munnel-server restart-looping (`--public-scheme must be http or https`) | A `.env` var got concatenated onto the previous line (missing trailing newline — see §6 caveat). `docker compose config \| grep public-scheme` shows the mangled value. Fix the `.env` and `docker compose up -d`. |
 | 8080 reachable from the internet | It shouldn't be. Compose binds `127.0.0.1:8080:8080`. If exposed, the repo/VM compose drifted — fix the port binding. |
 | `SkuNotAvailable` creating/recreating the VM | westeurope D2als_v7 was unrestricted at deploy time. If it's capacity-blocked, pick another unrestricted 2-vCPU SKU: `az rest --method get --url "https://management.azure.com/subscriptions/<sub>/providers/Microsoft.Compute/skus?api-version=2021-07-01&\$filter=location%20eq%20'westeurope'"` and filter `restrictions == []`. uksouth will not work. |
 | SSH fails from a new location | Port 22 is locked to a deployer IP. Update the `AllowSSH` NSG rule (§3). |

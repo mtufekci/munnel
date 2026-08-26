@@ -4,6 +4,9 @@
 #   MUNNEL_DOMAIN=tunnels.example.com
 #   MUNNEL_TOKENS=secret123
 #   MUNNEL_SCHEME=https
+#   MUNNEL_SIGNING_KEY=<hex>     # optional: enable HMAC-signed scoped tokens
+#   MUNNEL_AUTH_STUB=true        # optional: dev/test forward-auth (trusts any user)
+#   MUNNEL_SESSION_KEY=<hex>     # optional: forward-auth session cookie key
 #
 # DNS: point an A record for both the apex and the wildcard at your host:
 #   tunnels.example.com     A  <host-ip>
@@ -20,6 +23,9 @@ services:
     ports:
       - "7001:7001"               # control + multiplexing (tunnel clients dial this)
       - "127.0.0.1:8080:8080"     # public HTTP ingress — only Caddy reaches this
+    environment:
+      - MUNNEL_SIGNING_KEY=${MUNNEL_SIGNING_KEY:-}
+      - MUNNEL_SESSION_KEY=${MUNNEL_SESSION_KEY:-}
     command:
       - --domain=${MUNNEL_DOMAIN:-localhost}
       - --control-addr=:7001
@@ -27,6 +33,12 @@ services:
       - --public-scheme=${MUNNEL_SCHEME:-https}
       - --public-port=443
       - --auth-tokens=${MUNNEL_TOKENS:-}
+      # Signed tokens: enabled automatically when MUNNEL_SIGNING_KEY is set
+      # (the server reads the env var if no --signing-key-file is given).
+      # Forward-auth stub: dev/test only — trusts any submitted user. Only
+      # affects tunnels that opt into --protect. Do NOT enable in production;
+      # wire a real OIDC provider (forwardauth.Provider) instead.
+      - --auth-stub=${MUNNEL_AUTH_STUB:-false}
 
   ask:
     image: python:3-alpine

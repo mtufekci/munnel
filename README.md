@@ -42,6 +42,8 @@ spirit: your server, your domain, your tokens.
 - interactive dashboard (bubble tea) with connection status, uptime, request counts
 - live request stream: method, path, status code, latency — right in your shell
 
+![terminal TUI](docs/images/terminal-tui.png)
+
 **web request inspector**
 
 - dark single-page inspector on `localhost:4040`, served by the client itself
@@ -268,6 +270,8 @@ address and token.
 ## request inspector
 
 while a tunnel runs, open <http://localhost:4040>:
+
+![web inspector](docs/images/inspector.png)
 
 - **request stream** — live list with method, path, status, latency
 - **filters** — by method or errors, plus text search on the path
