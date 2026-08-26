@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: munnel tunnel server — EC2 + security group + elastic IP, Ubuntu 24.04, cloud-init.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.small
+    Description: 2 vCPU / 2 GiB — ~$15/mo
+  KeyName:
+    Type: String
+    Description: Name of an existing EC2 key pair (the deploy script imports one).
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to launch into (use the default VPC for a simple deploy).
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet in the chosen VPC (must be public for the Elastic IP).
+  AmiId:
+    Type: String
+    Description: Ubuntu 24.04 LTS AMI id (resolved from SSM by the deploy script).
+  UserData:
+    Type: String
+    Description: base64-encoded cloud-init user-data (see deploy/cloud-init.yaml).
+
+Resources:
+  SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: munnel-server
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 22,   ToPort: 22,   CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 80,   ToPort: 80,   CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 443,  ToPort: 443,  CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 7001, ToPort: 7001, CidrIp: 0.0.0.0/0 }
+
+  EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  EIPAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt EIP.AllocationId
+      InstanceId: !Ref Instance
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: [ !Ref SG ]
+      ImageId: !Ref AmiId
+      UserData: !Ref UserData
+      Tags:
+        - { Key: Name, Value: munnel-server }
+
+Outputs:
+  PublicIp:
+    Value: !GetAtt Instance.PublicIp
+  ElasticIp:
+    Value: !Ref EIP

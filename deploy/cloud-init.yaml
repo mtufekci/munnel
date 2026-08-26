@@ -1,0 +1,55 @@
+#cloud-config
+# munnel server — portable cloud-init user-data.
+#
+# The provider deploy scripts (deploy/<provider>/deploy.sh) substitute
+# __DOMAIN__ and __TOKEN__ before passing this as user-data to a fresh Ubuntu
+# 22.04/24.04 VM. It installs Docker and writes the secret .env + a systemd
+# unit, then stops. The deploy script scp's your local repo source to /opt/munnel
+# and runs `docker compose up -d --build` (see deploy/lib.sh: ship_and_start).
+#
+# Why scp instead of git clone: the repo is private, so the VM can't clone it
+# without credentials. Baking the source into user-data blows past the ~16–64 KB
+# user-data limit on most providers. scp after provisioning has no such limit.
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - gnupg
+
+write_files:
+  - path: /opt/munnel/.env
+    permissions: '0600'
+    owner: root:root
+    content: |
+      MUNNEL_DOMAIN=__DOMAIN__
+      MUNNEL_TOKENS=__TOKEN__
+      MUNNEL_SCHEME=https
+  - path: /etc/systemd/system/munnel.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=munnel tunnel server (docker compose)
+      After=docker.service
+      Requires=docker.service
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/munnel
+      ExecStart=/usr/bin/docker compose up -d --build
+      ExecStop=/usr/bin/docker compose down
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - set -eux
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+  - chmod a+r /etc/apt/keyrings/docker.gpg
+  - |
+    . /etc/os-release
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update -y
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  - systemctl enable --now docker
+  - echo "cloud-init done; awaiting source via scp + docker compose up --build (see deploy/README.md)"
