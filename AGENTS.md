@@ -111,6 +111,15 @@ install-dev.sh    # dev: build client, write ~/.munnel/config (token via --token
 - **`--public-port`**: the server reports `https://<sub>.<domain>` (not `:8080`)
   because it runs behind Caddy on 443. Don't remove this flag or client URLs
   will show an internal port.
+- **WebSocket upgrades** take a separate code path from normal HTTP. In
+  `proxy.go`, `isUpgrade(r)` routes to `proxyWebSocket`, which hijacks the
+  public TCP conn and `io.Copy`s it bidirectionally against a mux stream. On
+  the client side, `forwarder.go`'s `Serve` branches to `serveWebSocket`,
+  which dials the local service as raw TCP and pipes the same way. The
+  hop-by-hop header stripping the HTTP path does **must not** run here —
+  `Upgrade`/`Connection`/`Sec-WebSocket-*` are load-bearing for the handshake.
+  Regression test: `integration/websocket_test.go` (verified to fail with
+  `status=501` when the hijack path is removed).
 
 ## Conventions
 

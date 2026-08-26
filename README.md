@@ -306,10 +306,11 @@ the socket switches to binary frames exclusively.
 
 ## limitations
 
-- **HTTP(S) only.** raw TCP tunnels (databases, ssh) are not carried.
-- **no websocket/connection upgrades yet** — `Upgrade` requests get a `501`.
-  dev servers with HMR websockets still serve their pages fine, but live
-  reload won't connect through the tunnel.
+- **HTTP(S) + WebSocket only.** raw TCP tunnels (databases, ssh) are not carried.
+- WebSocket upgrades are hijacked into a raw bidirectional pipe through the
+  tunnel — frames flow end-to-end in both directions. The inspector records
+  the `101 Switching Protocols` handshake but does not capture individual WS
+  frames (they are arbitrary-length and bidirectional).
 - request bodies are buffered up to `--max-body-mb` on both ends; responses
   stream without a cap.
 - inspector capture is truncated at 256 KiB per body for display (proxying is

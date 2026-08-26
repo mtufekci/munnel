@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mtufekci/munnel/internal/inspection"
@@ -72,7 +73,6 @@ func (f *Forwarder) LocalAddr() string {
 func (f *Forwarder) Serve(st *mux.Stream) *inspection.Record {
 	start := time.Now()
 	rec := &inspection.Record{Time: start}
-	defer st.CloseWrite()
 
 	br := bufio.NewReader(st)
 	req, err := http.ReadRequest(br)
@@ -80,11 +80,21 @@ func (f *Forwarder) Serve(st *mux.Stream) *inspection.Record {
 		rec.Errored = true
 		rec.Error = "malformed request from tunnel: " + err.Error()
 		writeRawError(st, http.StatusBadRequest, "malformed request")
+		_ = st.CloseWrite()
 		return rec
 	}
 	rec.Method = req.Method
 	rec.Path = req.URL.RequestURI()
 	rec.ReqHeaders = cloneHeader(req.Header)
+
+	// WebSocket / protocol upgrade: the stream becomes a raw bidirectional
+	// pipe to the local service. The HTTP request/response framing path below
+	// does not apply (no bounded body, no single response).
+	if isUpgrade(req) {
+		return f.serveWebSocket(st, br, req, rec, start)
+	}
+
+	defer st.CloseWrite()
 
 	// Read the request body (bounded). The server always either sets
 	// Content-Length or closes the stream when done, so this terminates.
@@ -129,6 +139,77 @@ func (f *Forwarder) Serve(st *mux.Stream) *inspection.Record {
 	}
 	rec.RespBody, rec.RespTruncated = capBuf.bytes(), capBuf.truncated
 	rec.Duration = time.Since(start).Milliseconds()
+	return rec
+}
+
+// isUpgrade reports whether req is a protocol-upgrade request (WebSocket, etc.).
+func isUpgrade(req *http.Request) bool {
+	return strings.EqualFold(req.Header.Get("Connection"), "upgrade") || req.Header.Get("Upgrade") != ""
+}
+
+// serveWebSocket dials the local service as a raw TCP connection and pipes it
+// bidirectionally against the tunnel stream. The upgrade handshake is re-sent
+// verbatim (preserving Upgrade/Connection/Sec-WebSocket-* headers); the Host
+// header is rewritten to the local addr so the local service sees the same
+// request shape as the HTTP path (the original public host survives in
+// X-Forwarded-Host). The inspector gets a 101 record; the WS frames themselves
+// are not captured (arbitrary-length, bidirectional).
+func (f *Forwarder) serveWebSocket(st *mux.Stream, br *bufio.Reader, req *http.Request, rec *inspection.Record, start time.Time) *inspection.Record {
+	local, err := net.DialTimeout("tcp", f.LocalAddr(), 5*time.Second)
+	if err != nil {
+		rec.Errored = true
+		rec.Error = fmt.Sprintf("local service unreachable (%s): %v", f.LocalAddr(), rootCause(err))
+		writeRawError(st, http.StatusBadGateway, "munnel: local service "+f.LocalAddr()+" unreachable")
+		rec.Duration = time.Since(start).Milliseconds()
+		_ = st.CloseWrite()
+		return rec
+	}
+	defer local.Close()
+
+	// Re-send the upgrade request to the local service. http.ReadRequest keeps
+	// Host in req.Header, so skip it here and write the local Host explicitly.
+	out := bufio.NewWriter(local)
+	fmt.Fprintf(out, "%s %s HTTP/1.1\r\n", req.Method, req.URL.RequestURI())
+	fmt.Fprintf(out, "Host: %s\r\n", f.LocalAddr())
+	for k, vs := range req.Header {
+		if strings.EqualFold(k, "Host") {
+			continue
+		}
+		for _, v := range vs {
+			fmt.Fprintf(out, "%s: %s\r\n", k, v)
+		}
+	}
+	fmt.Fprintf(out, "X-Forwarded-Host: %s\r\n", req.Host)
+	fmt.Fprintf(out, "X-Forwarded-Proto: http\r\n")
+	out.WriteString("\r\n")
+	if err := out.Flush(); err != nil {
+		rec.Errored = true
+		rec.Error = "local write failed: " + err.Error()
+		rec.Duration = time.Since(start).Milliseconds()
+		_ = st.CloseWrite()
+		return rec
+	}
+
+	// Drain anything the bufio reader pre-buffered past the request headers
+	// (pipelined WS frames that arrived with the handshake) onto the local
+	// connection before entering the raw pipe.
+	if n := br.Buffered(); n > 0 {
+		prebuf := make([]byte, n)
+		_, _ = io.ReadFull(br, prebuf)
+		_, _ = local.Write(prebuf)
+	}
+
+	// Record the upgrade for the inspector (frames themselves are not captured).
+	rec.Status = http.StatusSwitchingProtocols
+	rec.Duration = time.Since(start).Milliseconds()
+
+	// Bidirectional pipe: tunnel stream ↔ local TCP. When either direction
+	// ends, close both to unblock the other. Double-close is safe.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = io.Copy(local, st); _ = local.Close(); _ = st.Close() }()
+	go func() { defer wg.Done(); _, _ = io.Copy(st, local); _ = st.Close(); _ = local.Close() }()
+	wg.Wait()
 	return rec
 }
 

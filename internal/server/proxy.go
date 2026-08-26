@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mtufekci/munnel/internal/proto"
@@ -83,10 +84,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // proxyTo forwards one public request over the tunnel and relays the response.
 func (s *Server) proxyTo(w http.ResponseWriter, r *http.Request, c *Client) {
-	// WebSocket / other upgrades are not carried (yet).
-	if strings.EqualFold(r.Header.Get("Connection"), "upgrade") || r.Header.Get("Upgrade") != "" {
-		s.errorPage(w, http.StatusNotImplemented, "upgrade not supported",
-			"WebSocket and other connection upgrades are not supported by munnel yet")
+	// WebSocket / other protocol upgrades: hijack the public TCP conn into a
+	// raw bidirectional pipe through the tunnel. The framed HTTP/1.1 path below
+	// does not apply (upgrades have no bounded request body or response).
+	if isUpgrade(r) {
+		s.proxyWebSocket(w, r, c)
 		return
 	}
 
@@ -194,6 +196,81 @@ func (s *Server) proxyTo(w http.ResponseWriter, r *http.Request, c *Client) {
 			return
 		}
 	}
+}
+
+// isUpgrade reports whether r is a protocol-upgrade request (WebSocket, etc.).
+func isUpgrade(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Connection"), "upgrade") || r.Header.Get("Upgrade") != ""
+}
+
+// proxyWebSocket hijacks the public TCP connection and pipes it raw through a
+// mux stream to the client, which dials the local service the same way. The
+// upgrade handshake (request line + headers, including Upgrade/Connection and
+// Sec-WebSocket-*) is written onto the stream verbatim — the hop-by-hop
+// stripping the HTTP path does must NOT apply here, those headers are
+// load-bearing for the handshake. After the handshake, both directions are
+// io.Copy'd until either side closes; closing one half aborts the other.
+func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, c *Client) {
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		s.errorPage(w, http.StatusInternalServerError, "hijack unsupported",
+			"this server's ResponseWriter does not support connection hijacking")
+		return
+	}
+	conn, bufrw, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	st, err := c.Session.OpenStream(nil)
+	if err != nil {
+		return
+	}
+	defer st.Close()
+
+	// Replay the upgrade request onto the tunnel stream verbatim. r.Header
+	// does not contain Host (the server promoted it to r.Host), so write it
+	// explicitly. Keep every header as received — Upgrade/Connection and the
+	// Sec-WebSocket-* family must survive.
+	out := bufio.NewWriter(st)
+	fmt.Fprintf(out, "%s %s HTTP/1.1\r\n", r.Method, r.URL.RequestURI())
+	fmt.Fprintf(out, "Host: %s\r\n", r.Host)
+	for k, vs := range r.Header {
+		for _, v := range vs {
+			fmt.Fprintf(out, "%s: %s\r\n", k, v)
+		}
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		fmt.Fprintf(out, "X-Forwarded-For: %s, %s\r\n", xff, remoteIP(r.RemoteAddr))
+	} else {
+		fmt.Fprintf(out, "X-Forwarded-For: %s\r\n", remoteIP(r.RemoteAddr))
+	}
+	fmt.Fprintf(out, "X-Forwarded-Host: %s\r\n", r.Host)
+	fmt.Fprintf(out, "X-Forwarded-Proto: %s\r\n", s.cfg.PublicScheme)
+	out.WriteString("\r\n")
+	if err := out.Flush(); err != nil {
+		return
+	}
+
+	// The HTTP server may have pre-buffered bytes past the request headers
+	// (pipelined WS frames that arrived with the handshake). Drain them onto
+	// the stream before entering the raw pipe, where the bufio reader is no
+	// longer used.
+	if n := bufrw.Reader.Buffered(); n > 0 {
+		prebuf := make([]byte, n)
+		_, _ = io.ReadFull(bufrw.Reader, prebuf)
+		_, _ = st.Write(prebuf)
+	}
+
+	// Bidirectional pipe: browser ↔ mux stream ↔ local service. When either
+	// direction ends, close both to unblock the other. Double-close is safe
+	// (mux.Stream.Close and net.Conn.Close are both idempotent enough).
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = io.Copy(st, conn); _ = st.Close(); _ = conn.Close() }()
+	go func() { defer wg.Done(); _, _ = io.Copy(conn, st); _ = st.Close(); _ = conn.Close() }()
+	wg.Wait()
 }
 
 // addCORSDebugHeaders makes error/status pages readable from fetch() during
