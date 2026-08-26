@@ -255,6 +255,34 @@ ssh munnel-dev 'cd /opt/munnel && docker compose up -d --build'
 The image build takes ~2 min (Go build inside `golang:1.25-alpine`). Caddy and
 the ask container are pulled images, no rebuild.
 
+### Deploy via GitHub Actions (manual)
+
+There is a `Deploy server` workflow at `.github/workflows/deploy-server.yml`,
+triggered manually from the Actions tab (no push/PR trigger). It does the same
+ship-and-rebuild as above, plus an optional `go test -race ./...` gate and a
+post-deploy health check. Use it when you don't want to SSH from your laptop.
+
+**One-time setup — add three repository secrets** (Settings → Secrets and
+variables → Actions):
+
+| Secret | Value |
+|--------|-------|
+| `SSH_PRIVATE_KEY` | the ed25519 private key with access to the VM (full key, including `-----BEGIN/END-----`) |
+| `SSH_HOST` | `munnel-dev.westeurope.cloudapp.azure.com` (or the IP `51.105.170.135`) |
+| `SSH_USER` | `azureuser` |
+
+Then: Actions → **Deploy server** → Run workflow. Inputs:
+
+- **Run tests** (default on) — runs `go test -race ./...` first; the deploy
+  aborts if any test fails.
+- **Reload Caddy** (default on) — reloads the Caddyfile after deploy (needed
+  only if `Caddyfile.example` changed; harmless otherwise).
+
+The workflow excludes `.env` from the tarball, so live secrets are never
+touched. It does not do first-boot provisioning — for a fresh VM use
+`deploy/azure/deploy.sh`. On a failed health check it dumps the last 40 lines
+of `munnel-server` logs in the workflow summary.
+
 ---
 
 ## 7. DNS and TLS

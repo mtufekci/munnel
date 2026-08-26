@@ -89,6 +89,8 @@ deploy/
   hetzner/        # deploy.sh (hcloud)
   digitalocean/   # deploy.sh (doctl)
   gcp/            # deploy.sh (gcloud)
+.github/
+  workflows/deploy-server.yml  # manual workflow_dispatch: ship source to the Azure VM + rebuild
 Caddyfile.example # on-demand TLS with ask http://ask:8080/check
 docker-compose.yml# munnel-server + Caddy + approve (built from source, no registry)
 Dockerfile        # golang:1.25 → server binary
@@ -181,6 +183,7 @@ install-dev.sh    # dev: build client, write ~/.munnel/config (token via --token
 | Change token/auth logic | `internal/server/auth.go` + `internal/token/token.go` | `internal/token/token_test.go` + `integration/token_auth_test.go` |
 | Change forward-auth | `internal/forwardauth/forwardauth.go` + `proxy.go` ServeHTTP | `internal/forwardauth/forwardauth_test.go` + `integration/forwardauth_test.go` |
 | Add a cloud provider | new `deploy/<provider>/deploy.sh` sourcing `deploy/lib.sh` + an IaC file | dry-run the provision, then a real deploy |
+| Change the CI deploy | `.github/workflows/deploy-server.yml` (manual `workflow_dispatch`) | trigger it from the Actions tab after pushing |
 | Rotate the dev token | on the VM: `docs/OPERATIONS.md` § token rotation | client reconnects with the new token |
 | Add an inspection feature | `internal/inspection/server.go` | `go test -race ./internal/inspection/...` |
 
