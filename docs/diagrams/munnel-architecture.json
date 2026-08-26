@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Munnel Tunnel Architecture",
+    "output": "munnel-architecture.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "visitor", "type": "external", "label": "Visitor", "sublabel": "browser", "pos": [40, 280], "size": [130, 60] },
+    { "id": "server", "type": "backend", "label": "munnel-server", "sublabel": ":8080 · :7001 · auth", "pos": [240, 270], "size": [190, 76] },
+    { "id": "client", "type": "backend", "label": "munnel", "sublabel": "TUI + mux session", "pos": [580, 276], "size": [160, 64] },
+    { "id": "forwarder", "type": "backend", "label": "forwarder", "sublabel": "localhost dispatcher", "pos": [790, 276], "size": [160, 60] },
+    { "id": "localsvc", "type": "external", "label": "your app", "sublabel": ":3000", "pos": [990, 276], "size": [130, 60] },
+    { "id": "inspector", "type": "frontend", "label": "inspector", "sublabel": ":4040 SPA + WS feed", "pos": [790, 140], "size": [160, 64], "tag": "open localhost:4040" }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Public Internet (VPS)", "wraps": ["visitor", "server"] },
+    { "kind": "region", "label": "Your Machine", "wraps": ["client", "forwarder", "inspector", "localsvc"] }
+  ],
+  "connections": [
+    { "id": "visitor-server", "from": "visitor", "to": "server", "label": "HTTPS :8080", "variant": "emphasis", "labelDy": -24 },
+    { "id": "server-client", "from": "server", "to": "client", "label": "TCP :7001 · mux streams", "variant": "emphasis", "labelDy": -42 },
+    { "id": "client-forwarder", "from": "client", "to": "forwarder", "label": "HTTP/1.1", "labelDy": -22 },
+    { "id": "forwarder-app", "from": "forwarder", "to": "localsvc", "label": "GET /" },
+    { "id": "forwarder-inspector", "from": "forwarder", "to": "inspector", "label": "tee capture", "variant": "dashed", "fromSide": "top", "toSide": "bottom" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Public Edge", "items": ["Visitors reach https://<sub>.tunnels.example.com over TLS", "Subdomain router picks the tunnel from the registry", "Token auth gates control-port connections (static or HMAC-signed)"] },
+    { "dot": "emerald", "title": "One Connection, Many Streams", "items": ["One persistent TCP :7001 socket carries every request concurrently", "JSON hello handshake, then 9-byte binary frames with stream ids"] },
+    { "dot": "violet", "title": "Observe + Replay Locally", "items": ["Forwarder relays to localhost:3000, teeing traffic into the inspector", "Inspector on :4040 streams live over WebSocket — replay without re-triggering providers"] }
+  ]
+}

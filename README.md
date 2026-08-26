@@ -65,18 +65,13 @@ spirit: your server, your domain, your tokens.
 
 ## architecture
 
-```
-                 public internet                        your machine
-┌──────────────────┐   TCP/7001 (mux)    ┌──────────────────────────┐
-│                  │ ◄─────────────────► │  munnel (client)         │
-│  munnel-server   │   ┌─ stream 1 ──┐   │    │                     │
-│                  │   ├─ stream 2 ──┤   │    ▼                     │
-│  :8080 http ─────┼─► └─ stream n ──┘   │  forwarder ──► :3000     │
-│  subdomain router│                    │    │                     │
-│  :7001 control   │                    │    ▼                     │
-│  token auth      │                    │  inspector ──► :4040     │
-└──────────────────┘                    └──────────────────────────┘
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/architecture-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/diagrams/architecture-light.png">
+  <img alt="munnel tunnel architecture: visitor → munnel-server (public internet) → munnel client → forwarder → your app + inspector (your machine)" src="docs/diagrams/architecture-dark.png">
+</picture>
+
+**[interactive version](docs/diagrams/munnel-architecture.html)** — pan/zoom, focus, dark & light themes
 
 one TCP connection per tunnel carries every request concurrently. the server
 parses each public HTTP request, opens a mux stream, writes the request in
@@ -338,17 +333,15 @@ token rotation, redeploy, troubleshooting). the `docker-compose.yml` and
 munnel multiplexes every concurrent HTTP exchange across one persistent TCP
 socket using a 9-byte binary frame header:
 
-```
- 0                   1                   2
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
-+---------------+-------------------------------+  ─┐
-|     type      |          stream id            |   │ 9-byte header,
-+---------------+-------------------------------+   │ big-endian
-|            payload length                     |  ─┘
-+-----------------------------------------------+  ─┐
-|                 payload …                     |   │ ≤ 1 MiB per frame
-+-----------------------------------------------+  ─┘
-```
+**`type` (1 B) · `stream id` (4 B, big-endian) · `payload length` (4 B) · payload (≤ 1 MiB per frame)**
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/lifecycle-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/diagrams/lifecycle-light.png">
+  <img alt="request lifecycle: dispatch → local exchange → response + teardown across one mux stream on TCP :7001" src="docs/diagrams/lifecycle-dark.png">
+</picture>
+
+**[interactive version](docs/diagrams/munnel-request-lifecycle.html)** — step through dispatch, the local exchange, and teardown
 
 | type | byte | meaning |
 |---|---|---|
@@ -434,5 +427,8 @@ munnel/
 ├── install.sh                  # source installer (builds client + server)
 ├── install-dev.sh              # one-command dev setup for a managed server
 └── docs/
-    └── OPERATIONS.md           # managed Azure deployment + operator runbook
+    ├── OPERATIONS.md           # managed Azure deployment + operator runbook
+    └── diagrams/               # archify diagrams (HTML viewer + dark/light PNG exports)
+        ├── munnel-architecture.*      # tunnel topology
+        └── munnel-request-lifecycle.* # frame-level request lifecycle
 ```

@@ -1,0 +1,228 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Request Lifecycle Through the Munnel Tunnel",
+    "output": "munnel-request-lifecycle.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [
+      1080,
+      600
+    ]
+  },
+  "participants": [
+    {
+      "id": "visitor",
+      "type": "external",
+      "label": "Visitor",
+      "sublabel": "public internet"
+    },
+    {
+      "id": "proxy",
+      "type": "backend",
+      "label": "munnel-server",
+      "sublabel": "proxy :8080"
+    },
+    {
+      "id": "stream",
+      "type": "messagebus",
+      "label": "mux stream",
+      "sublabel": "on TCP :7001"
+    },
+    {
+      "id": "client",
+      "type": "backend",
+      "label": "munnel",
+      "sublabel": "client + forwarder"
+    },
+    {
+      "id": "localsvc",
+      "type": "backend",
+      "label": "your app",
+      "sublabel": "localhost:3000"
+    },
+    {
+      "id": "inspector",
+      "type": "frontend",
+      "label": "inspector",
+      "sublabel": ":4040"
+    }
+  ],
+  "segments": [
+    {
+      "from": 160,
+      "to": 295,
+      "label": "Dispatch"
+    },
+    {
+      "from": 310,
+      "to": 385,
+      "label": "Local exchange"
+    },
+    {
+      "from": 400,
+      "to": 525,
+      "label": "Response + teardown"
+    }
+  ],
+  "messages": [
+    {
+      "id": "public-request",
+      "from": "visitor",
+      "to": "proxy",
+      "y": 185,
+      "label": "GET https://app.tunnels.example.com",
+      "variant": "emphasis"
+    },
+    {
+      "id": "open-stream",
+      "from": "proxy",
+      "to": "stream",
+      "y": 214,
+      "label": "OPEN \u00b7 stream id, method + host metadata",
+      "variant": "default"
+    },
+    {
+      "id": "request-data",
+      "from": "proxy",
+      "to": "stream",
+      "y": 243,
+      "label": "DATA \u00b7 raw HTTP/1.1 request bytes",
+      "variant": "default"
+    },
+    {
+      "id": "dispatch-stream",
+      "from": "stream",
+      "to": "client",
+      "y": 272,
+      "label": "DATA \u00b7 same stream id",
+      "variant": "emphasis"
+    },
+    {
+      "id": "local-request",
+      "from": "client",
+      "to": "localsvc",
+      "y": 301,
+      "label": "GET / HTTP/1.1",
+      "variant": "default"
+    },
+    {
+      "id": "tee-capture",
+      "from": "client",
+      "to": "inspector",
+      "y": 330,
+      "label": "tee request + response into ring buffer",
+      "variant": "dashed"
+    },
+    {
+      "id": "local-response",
+      "from": "localsvc",
+      "to": "client",
+      "y": 359,
+      "label": "200 OK \u00b7 streams (SSE stays live)",
+      "variant": "return"
+    },
+    {
+      "id": "response-data",
+      "from": "client",
+      "to": "stream",
+      "y": 388,
+      "label": "DATA \u00b7 response chunks",
+      "variant": "default"
+    },
+    {
+      "id": "proxy-relay",
+      "from": "stream",
+      "to": "proxy",
+      "y": 417,
+      "label": "DATA \u00b7 relay to connection",
+      "variant": "default"
+    },
+    {
+      "id": "public-response",
+      "from": "proxy",
+      "to": "visitor",
+      "y": 446,
+      "label": "200 OK",
+      "variant": "return",
+      "note": "one stream per request; many streams share the socket"
+    },
+    {
+      "id": "client-close",
+      "from": "client",
+      "to": "stream",
+      "y": 475,
+      "label": "CLOSE \u00b7 client half finished",
+      "variant": "dashed"
+    },
+    {
+      "id": "proxy-close",
+      "from": "stream",
+      "to": "proxy",
+      "y": 504,
+      "label": "CLOSE \u00b7 stream id retires",
+      "variant": "dashed"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "proxy",
+      "from": 180,
+      "to": 512,
+      "type": "backend"
+    },
+    {
+      "participant": "stream",
+      "from": 209,
+      "to": 509,
+      "type": "messagebus"
+    },
+    {
+      "participant": "client",
+      "from": 268,
+      "to": 480,
+      "type": "backend"
+    },
+    {
+      "participant": "localsvc",
+      "from": 297,
+      "to": 364,
+      "type": "backend"
+    },
+    {
+      "participant": "inspector",
+      "from": 325,
+      "to": 334,
+      "type": "frontend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Concurrent by Framing",
+      "items": [
+        "Every exchange is a stream on the one TCP :7001 socket",
+        "9-byte header: type \u00b7 stream id \u00b7 payload length, chunked to 1 MiB frames",
+        "Stream ids use parity: server odd, client even \u2014 both sides may open"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Half-Close Semantics",
+      "items": [
+        "CLOSE is directional: the peer sees EOF but may still write",
+        "Both sides CLOSE, then the stream id retires",
+        "RESET aborts immediately on error"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Capture Without Replays",
+      "items": [
+        "The forwarder tees each exchange into the inspector's 200-entry ring",
+        "Watch webhooks land live \u2014 or replay them to localhost yourself"
+      ]
+    }
+  ]
+}
