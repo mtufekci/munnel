@@ -93,6 +93,7 @@ print_done() {
 	echo "    *.${domain}      A   <this VM's public IP>"
 	echo "  Then connect a client:"
 	echo "    munnel 3000 -s myapp -t <TOKEN> --server ${domain}:7001"
+	echo "  (TLS control port 7002: see deploy/README.md § TLS control port)"
 	echo "  Logs (on the VM): sudo docker compose -f /opt/munnel/docker-compose.yml logs -f"
 	echo "════════════════════════════════════════════════════════════"
 }

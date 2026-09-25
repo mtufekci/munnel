@@ -252,5 +252,5 @@ func hmacSum(key, payload []byte) []byte {
 	return m.Sum(nil)
 }
 
-func b64(b []byte) string  { return base64.RawURLEncoding.EncodeToString(b) }
+func b64(b []byte) string           { return base64.RawURLEncoding.EncodeToString(b) }
 func b64d(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }

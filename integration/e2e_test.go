@@ -220,6 +220,7 @@ func TestTunnelRoundTrip(t *testing.T) {
 	// Replay the webhook against localhost.
 	before := hits.Load()
 	replayReq, _ := http.NewRequest("POST", fmt.Sprintf("http://%s/api/replay/%d", inspectorAddr, post.ID), nil)
+	replayReq.Header.Set(inspection.TokenHeader, insp.Token()) // the inspector API needs its per-launch token
 	replayResp, err := http.DefaultClient.Do(replayReq)
 	if err != nil {
 		t.Fatal(err)
@@ -271,10 +272,10 @@ func TestSubdomainCollisionRejected(t *testing.T) {
 
 	// second client requesting the same subdomain must be rejected
 	tun2, err := client.New(client.Config{
-		LocalPort:   serverPort(t, local.URL),
-		ServerAddr:  srv.ControlListener().Addr().String(),
-		Subdomain:   "taken",
-		Inspect:     false,
+		LocalPort:  serverPort(t, local.URL),
+		ServerAddr: srv.ControlListener().Addr().String(),
+		Subdomain:  "taken",
+		Inspect:    false,
 	})
 	if err != nil {
 		t.Fatal(err)

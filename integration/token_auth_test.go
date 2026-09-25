@@ -54,11 +54,11 @@ func startServerWithAuth(t *testing.T, opts server.AuthOptions) *server.Server {
 func connectSigned(t *testing.T, srv *server.Server, port int, sub, tok string) (ok bool, subdomain, msg string) {
 	t.Helper()
 	tun, err := client.New(client.Config{
-		LocalPort:   port,
-		ServerAddr:  srv.ControlListener().Addr().String(),
-		Subdomain:   sub,
-		Token:       tok,
-		Inspect:     false,
+		LocalPort:  port,
+		ServerAddr: srv.ControlListener().Addr().String(),
+		Subdomain:  sub,
+		Token:      tok,
+		Inspect:    false,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -170,11 +170,13 @@ func TestSignedToken_Tampered(t *testing.T) {
 	body := tok[len(token.Prefix):]
 	dot := strings.IndexByte(body, '.')
 	sig := body[dot+1:]
+	// Flip the first signature char: the last one's low bits are base64
+	// padding the decoder ignores, so changing it left ~5% of tokens valid.
 	alt := byte('A')
-	if sig[len(sig)-1] == 'A' {
+	if sig[0] == 'A' {
 		alt = 'B'
 	}
-	tampered := token.Prefix + body[:dot+1] + sig[:len(sig)-1] + string(alt)
+	tampered := token.Prefix + body[:dot+1] + string(alt) + sig[1:]
 
 	if ok, _, _ := connectSigned(t, srv, serverPort(t, local.URL), "alice", tampered); ok {
 		t.Fatal("tampered token was accepted")

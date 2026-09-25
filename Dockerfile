@@ -14,6 +14,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 
 FROM scratch
 COPY --from=build /out/munnel-server /munnel-server
-# Control plane (clients connect here) and public HTTP ingress.
-EXPOSE 7001 8080
+# Control plane (clients connect here: 7001 plaintext, 7002 TLS) and public
+# HTTP ingress.
+EXPOSE 7001 7002 8080
 ENTRYPOINT ["/munnel-server"]

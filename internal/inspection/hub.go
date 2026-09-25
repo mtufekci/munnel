@@ -13,8 +13,8 @@ const wsWriteDeadline = 5 * time.Second
 
 // Hub fans captured records out to every connected inspector tab.
 type Hub struct {
-	mu      sync.RWMutex
-	conns   map[*websocket.Conn]bool
+	mu    sync.RWMutex
+	conns map[*websocket.Conn]bool
 }
 
 func NewHub() *Hub {
@@ -22,8 +22,8 @@ func NewHub() *Hub {
 }
 
 var upgrader = websocket.Upgrader{
-	// The inspector UI and its websocket share an origin (localhost:4040);
-	// cross-origin dev tooling is also fine on a local-only port.
+	// Server.guard has already checked Host, Origin (when sent) and the
+	// access token before a request reaches ServeWS.
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 

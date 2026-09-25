@@ -31,9 +31,12 @@ type Stream struct {
 	id   uint32
 	sess *Session
 
-	chunks chan []byte     // inbound DATA payloads, never closed
-	eofCh  chan struct{}   // closed once, after readErr is published
-	cur    []byte          // partially consumed chunk, owned by the reader
+	chunks chan []byte   // inbound DATA payloads, never closed
+	eofCh  chan struct{} // closed once, after readErr is published
+	cur    []byte        // partially consumed chunk, owned by the reader
+
+	aborted   chan struct{} // closed once the stream is reset or its session dies
+	abortOnce sync.Once
 
 	mu        sync.Mutex // guards readErr/readDone/sentClose/reset
 	readErr   error
@@ -41,18 +44,29 @@ type Stream struct {
 	sentClose bool // CLOSE/RESET frame already sent
 	reset     bool // aborted locally or by peer; writes must fail
 
-	wmu sync.Mutex // serializes frame emission from Write/CloseWrite/Reset
+	wmu sync.Mutex // serializes frame emission from Write/CloseWrite
 
 	removeOnce sync.Once
 }
 
 func newStream(sess *Session, id uint32) *Stream {
 	return &Stream{
-		id:     id,
-		sess:   sess,
-		chunks: make(chan []byte, 16),
-		eofCh:  make(chan struct{}),
+		id:      id,
+		sess:    sess,
+		chunks:  make(chan []byte, 16),
+		eofCh:   make(chan struct{}),
+		aborted: make(chan struct{}),
 	}
+}
+
+// Aborted is closed when the stream ends abnormally: a RESET from either side
+// or the death of the session. It is never closed by a graceful CLOSE. The
+// tunnel client watches it to drop the local request when the public viewer
+// goes away (an SSE response would otherwise keep the local connection open).
+func (s *Stream) Aborted() <-chan struct{} { return s.aborted }
+
+func (s *Stream) signalAbort() {
+	s.abortOnce.Do(func() { close(s.aborted) })
 }
 
 // ID returns the stream identifier unique within its session.
@@ -109,6 +123,7 @@ func (s *Stream) remoteReset() {
 	s.reset = true
 	s.mu.Unlock()
 	s.markReadDone(ErrStreamReset)
+	s.signalAbort()
 	s.remove()
 }
 
@@ -185,6 +200,13 @@ func (s *Stream) Write(b []byte) (int, error) {
 
 	total := 0
 	for len(b) > 0 {
+		if total > 0 {
+			// A reset mid-write (Abort from another goroutine) stops the
+			// remaining chunks; the peer would drop them anyway.
+			if err := check(); err != nil {
+				return total, err
+			}
+		}
 		n := len(b)
 		if n > MaxPayload {
 			n = MaxPayload
@@ -203,7 +225,7 @@ func (s *Stream) Write(b []byte) (int, error) {
 // both sides have closed.
 func (s *Stream) CloseWrite() error {
 	s.mu.Lock()
-	if s.sentClose {
+	if s.sentClose || s.reset {
 		s.mu.Unlock()
 		return nil
 	}
@@ -220,22 +242,38 @@ func (s *Stream) CloseWrite() error {
 	return err
 }
 
-// Reset aborts the stream in both directions immediately.
+// Reset aborts the stream in both directions immediately. It is Abort; the
+// name is kept for existing callers.
 func (s *Stream) Reset() error {
+	s.Abort()
+	return nil
+}
+
+// Abort resets the stream in both directions, including after CloseWrite: a
+// half-closed stream (request sent, response still streaming) is exactly the
+// case a proxy needs to kill when the public client disconnects. It sends a
+// RESET unless both sides had already finished cleanly, fails pending and
+// future reads and writes on this side, closes Aborted, and unregisters the
+// stream. Idempotent and safe to call from any goroutine.
+func (s *Stream) Abort() {
 	s.mu.Lock()
-	if s.sentClose {
+	if s.reset {
 		s.mu.Unlock()
-		return nil
+		return
 	}
-	s.sentClose = true
+	finished := s.sentClose && s.readDone && s.readErr == io.EOF
 	s.reset = true
+	s.sentClose = true
 	s.mu.Unlock()
 
-	s.wmu.Lock()
-	_ = s.sess.writeFrame(FrameReset, s.id, nil)
-	s.wmu.Unlock()
+	if !finished {
+		// Not under s.wmu: a Write blocked on a full socket must not delay the
+		// RESET, and the peer drops any DATA that trails it.
+		_ = s.sess.writeFrame(FrameReset, s.id, nil)
+	}
+	s.markReadDone(ErrStreamReset)
+	s.signalAbort()
 	s.remove()
-	return nil
 }
 
 // Close implements io.Closer as an alias for CloseWrite.

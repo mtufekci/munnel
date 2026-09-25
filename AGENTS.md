@@ -13,7 +13,7 @@ subdomain (`https://myapp.tunnels.example.com`) to the client's local port
 control frames over a single TCP socket. Caddy fronts the server with TLS.
 
 ```
-browser → Caddy :443 (TLS) → munnel-server :8080 (ingress) ─ mux ─ :7001 → client → localhost:3000
+browser → Caddy :443 (TLS) → munnel-server :8080 (ingress) ─ mux ─ :7001 (or TLS :7002) → client → localhost:3000
                                                                     │
                               Caddy on-demand TLS ← ask http://ask:8080/check ← approve.py (token gate)
 ```
@@ -68,7 +68,7 @@ internal/
   mux/
     *.go          # 9-byte-binary multiplexer protocol (frame codec, streams)
   inspection/
-    server.go     # inspection web UI (:4040) — replay requests, bodies; RWMutex-guarded ln
+    server.go     # inspection web UI (127.0.0.1:4040) — Host allowlist + per-launch token; replay
   token/
     token.go      # signed, scoped tunnel tokens (HMAC-SHA256); Mint/Parse/IDOf
   forwardauth/
@@ -78,6 +78,10 @@ integration/
   websocket_test.go # WebSocket tunnel end-to-end (hijack → raw pipe)
   token_auth_test.go # signed + static token auth, scoped subdomains
   forwardauth_test.go # protected tunnels: redirect, login flow, header injection, spoof stripping
+  tls_test.go      # TLS control port, cert pin, reserved names (TLS-only, enrollment refusal)
+  liveness_test.go # dead peer, same-token takeover, 504 header timeout, viewer disconnect closes local SSE
+  handshake_test.go # hello/ack line framing at 64/128/256…-byte boundaries
+  inspector_test.go # inspector Host/Origin allowlist + token
 docs/
   OPERATIONS.md   # operator runbook: deploy, SSH, logs, token rotation, hardening, teardown
 deploy/
@@ -156,6 +160,35 @@ install-dev.sh    # dev: build client, write ~/.munnel/config (token via --token
   `integration/forwardauth_test.go` (end-to-end; verified to fail when the FA
   block in `proxy.go` is removed).
 
+- **Handshake framing** (`proto.ReadMessage`/`WriteMessage`): hello and ack
+  are single JSON lines, and the same `bufio.Reader` is then handed to the mux.
+  Never parse them with `json.Decoder`: it may read past the newline or stop
+  before it (Go 1.27 does so for 64/128/256…-byte messages), shifting every
+  frame by a byte. `integration/handshake_test.go` covers the boundaries.
+- **TLS control port + reserved names**: `--control-tls-addr` (:7002) runs
+  beside plaintext :7001 once `--tls-cert-file/--tls-key-file` are set
+  (`CertFile` re-reads them on change). `handleControlConn(conn, overTLS)`
+  enforces `Authenticator.CheckReserved`: a reserved name only for its listed
+  signed-token IDs and only over TLS. The plaintext refusal carries
+  `proto.CodeTLSRequired` in the ack and the client stops reconnecting (a
+  retry would resend the token in the clear). `/__munnel/token` refuses
+  reserved subs. The server registers a client before writing the ack, so
+  proxies wait on `Client.waitReady` (no frame may precede the ack line).
+- **Liveness and aborts** (`internal/mux`): pongs are sent by the heartbeat
+  goroutine, never the read loop; the watchdog closes a session after
+  `IdleTimeout` (45 s) without any received byte (the session's reader marks
+  every read, so a 1 MiB frame arriving slowly counts), except while the read
+  loop itself is stalled on a slow stream reader. Silence is measured on the
+  monotonic clock (offsets from `Session.epoch`), never the wall clock.
+  `Stream.Abort` sends RESET even after CloseWrite and closes `Aborted()`.
+  `proxyTo` aborts on `r.Context().Done()` and before closing an unfinished
+  body (Close would drain an endless SSE body); the client forwarder cancels
+  the local request on `Aborted()`. A reconnect with the same signed-token
+  ID takes over its name only from a `Session.Stale()` holder (nothing
+  received for 1.5 ping intervals); a live holder refuses it as "in use", so
+  a sniffed plaintext token cannot evict a live tunnel (`Registry.Register`
+  returns the evicted client).
+
 ## Conventions
 
 - **Go module path**: `github.com/mtufekci/munnel`. Import paths follow.
@@ -185,7 +218,7 @@ install-dev.sh    # dev: build client, write ~/.munnel/config (token via --token
 | Add a cloud provider | new `deploy/<provider>/deploy.sh` sourcing `deploy/lib.sh` + an IaC file | dry-run the provision, then a real deploy |
 | Change the CI deploy | `.github/workflows/deploy-server.yml` (manual `workflow_dispatch`) | trigger it from the Actions tab after pushing |
 | Rotate the dev token | on the VM: `docs/OPERATIONS.md` § token rotation | client reconnects with the new token |
-| Add an inspection feature | `internal/inspection/server.go` | `go test -race ./internal/inspection/...` |
+| Add an inspection feature | `internal/inspection/server.go` (every route goes through `guard`) | `integration/inspector_test.go` + `integration/e2e_test.go` |
 
 ## Things that look wrong but aren't
 

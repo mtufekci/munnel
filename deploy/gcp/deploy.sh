@@ -56,7 +56,7 @@ USERDATA_FILE="$(mktemp)"
 trap 'rm -f "$USERDATA_FILE"' EXIT
 render_user_data "$USERDATA_FILE"
 
-# Firewall: open 22/80/443/7001. Idempotent — re-applies if it exists.
+# Firewall: open 22/80/443/7001/7002. Idempotent — re-applies if it exists.
 echo "→ firewall rules ..."
 $GCLOUD compute firewall-rules describe "munnel-allow-22"   >/dev/null 2>&1 || \
 	$GCLOUD compute firewall-rules create "munnel-allow-22"   --allow tcp:22   --source-ranges 0.0.0.0/0 --network default >/dev/null 2>&1 || true
@@ -66,6 +66,8 @@ $GCLOUD compute firewall-rules describe "munnel-allow-https">/dev/null 2>&1 || \
 	$GCLOUD compute firewall-rules create "munnel-allow-https" --allow tcp:443  --source-ranges 0.0.0.0/0 --network default >/dev/null 2>&1 || true
 $GCLOUD compute firewall-rules describe "munnel-allow-mux"  >/dev/null 2>&1 || \
 	$GCLOUD compute firewall-rules create "munnel-allow-mux"  --allow tcp:7001 --source-ranges 0.0.0.0/0 --network default >/dev/null 2>&1 || true
+$GCLOUD compute firewall-rules describe "munnel-allow-mux-tls" >/dev/null 2>&1 || \
+	$GCLOUD compute firewall-rules create "munnel-allow-mux-tls" --allow tcp:7002 --source-ranges 0.0.0.0/0 --network default >/dev/null 2>&1 || true
 
 echo "→ creating instance $NAME in $ZONE ..."
 $GCLOUD compute instances create "$NAME" \

@@ -5,17 +5,21 @@
 #   MUNNEL_TOKEN=<TOKEN> ./install-dev.sh
 #
 # Builds the munnel client, installs it on PATH, and writes ~/.munnel/config
-# with the server + token so day-to-day usage is just:
+# with the server address. A token is optional: pass --token for an
+# operator-issued token, or omit it and self-serve one with `munnel token`
+# (requires the enrollment password from your operator). Day-to-day usage:
 #
-#   munnel 3000 -s myapp        → https://myapp.tunnels.momentumpay.xyz
-#   munnel 3000                → random subdomain
+#   munnel token --sub myapp      # one-time: get your token (self-service)
+#   munnel 3000 -s myapp          → https://myapp.tunnels.momentumpay.xyz
+#   munnel 3000                   → random subdomain
 #
 # Re-run anytime to update the binary or rotate the token.
 set -eu
 
 # Public server address (non-secret). Override with MUNNEL_SERVER if needed.
 SERVER="${MUNNEL_SERVER:-tunnels.momentumpay.xyz:7001}"
-# Auth token is a secret — never hardcode it here. Pass via --token / MUNNEL_TOKEN.
+# Auth token is optional — self-serve with `munnel token` if omitted. Pass
+# via --token / MUNNEL_TOKEN for an operator-issued token.
 TOKEN=""
 
 # --- parse args ---
@@ -30,16 +34,18 @@ while [ $# -gt 0 ]; do
 install-dev.sh — set up the munnel client for the managed dev server
 
 usage:
-  ./install-dev.sh --token <TOKEN>            # token from your operator
-  MUNNEL_TOKEN=<TOKEN> ./install-dev.sh       # same, via env
-  ./install-dev.sh --token <TOKEN> --server tunnels.example.com:7001
+  ./install-dev.sh                          # build + install (self-serve token after)
+  ./install-dev.sh --token <TOKEN>           # with an operator-issued token
+  MUNNEL_TOKEN=<TOKEN> ./install-dev.sh      # same, via env
+  ./install-dev.sh --server tunnels.example.com:7001
 
 what it does:
   1. builds the munnel client (uses go if installed, else docker)
   2. installs it to /usr/local/bin (or ~/.local/bin if no write access)
-  3. writes ~/.munnel/config with server + token (chmod 600)
+  3. writes ~/.munnel/config with the server address (and token if given)
 
 after that:
+  munnel token --sub myapp    # one-time: acquire your token (self-service)
   munnel 3000 -s myapp        # → https://myapp.tunnels.momentumpay.xyz
 HELP
       exit 0 ;;
@@ -49,12 +55,7 @@ done
 
 # fall back to env if --token wasn't given
 [ -z "$TOKEN" ] && TOKEN="${MUNNEL_TOKEN:-}"
-[ -z "$TOKEN" ] && {
-  echo "install-dev.sh: token required." >&2
-  echo "  Get it from your operator, then run:" >&2
-  echo "    ./install-dev.sh --token <TOKEN>" >&2
-  exit 1
-}
+# TOKEN is optional: if absent, the dev self-serves with `munnel token`.
 
 fail() { echo "install-dev.sh: $*" >&2; exit 1; }
 
@@ -89,12 +90,21 @@ echo "✓ installed: $DEST/munnel"
 # --- 3. write config ---
 mkdir -p "$HOME/.munnel"
 CONFIG="$HOME/.munnel/config"
-cat > "$CONFIG" <<EOF
+if [ -n "$TOKEN" ]; then
+  cat > "$CONFIG" <<EOF
 # munnel client defaults — written by install-dev.sh $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
 # edit or re-run install-dev.sh to change. precedence: flag > env > this file.
 server=$SERVER
 token=$TOKEN
 EOF
+else
+  cat > "$CONFIG" <<EOF
+# munnel client defaults — written by install-dev.sh $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+# edit or re-run install-dev.sh to change. precedence: flag > env > this file.
+server=$SERVER
+# no token yet — self-serve one: munnel token --sub <name>
+EOF
+fi
 chmod 600 "$CONFIG"
 echo "✓ config:   $CONFIG  (chmod 600)"
 
@@ -104,6 +114,11 @@ case ":$PATH:" in
   *) echo "note: add $DEST to your PATH (e.g. 'export PATH=\"$DEST:\$PATH\"' in ~/.zshrc)" ;;
 esac
 echo
-echo "next:  munnel 3000 -s myapp      → https://myapp.tunnels.momentumpay.xyz"
+if [ -n "$TOKEN" ]; then
+  echo "next:  munnel 3000 -s myapp      → https://myapp.tunnels.momentumpay.xyz"
+else
+  echo "next:  munnel token --sub myapp  # acquire a token (self-service)"
+  echo "       munnel 3000 -s myapp      → https://myapp.tunnels.momentumpay.xyz"
+fi
 echo "       munnel 3000               → random subdomain"
 echo "       munnel --help             → full options"

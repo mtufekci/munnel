@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -36,14 +37,19 @@ func run() int {
 	fs := flag.NewFlagSet("munnel-server", flag.ExitOnError)
 	fs.SetOutput(os.Stderr)
 	domain := fs.String("domain", "localhost", "base domain for tunnel routing")
-	controlAddr := fs.String("control-addr", ":7001", "listen address for control/multiplexing")
+	controlAddr := fs.String("control-addr", ":7001", "listen address for control/multiplexing (plaintext)")
+	controlTLSAddr := fs.String("control-tls-addr", ":7002", "listen address for the TLS control port (runs only with --tls-cert-file/--tls-key-file)")
+	tlsCertFile := fs.String("tls-cert-file", "", "PEM certificate for the TLS control port (e.g. Caddy's certificate for --domain); reloaded when it changes")
+	tlsKeyFile := fs.String("tls-key-file", "", "PEM private key for --tls-cert-file")
 	proxyAddr := fs.String("proxy-addr", ":8080", "listen address for public HTTP ingress")
 	authTokens := fs.String("auth-tokens", "", "comma-separated list of valid static client tokens")
 	authFile := fs.String("auth-file", "", "JSON file mapping tokens to reserved subdomains")
 	signingKeyFile := fs.String("signing-key-file", "", "file containing the HMAC key for signed, scoped tokens (or $MUNNEL_SIGNING_KEY)")
 	revokedFile := fs.String("revoked-file", "", "file of revoked signed-token IDs (one per line); reload requires restart")
+	reservedFile := fs.String("reserved-file", "", "file of reserved names, one \"name tokenID[,tokenID...]\" per line (or $MUNNEL_RESERVED, entries separated by ';'); reserved names are claimable only by those signed tokens and only over TLS; reload requires restart")
 	authStub := fs.Bool("auth-stub", false, "enable the stub forward-auth provider (dev/test only — trusts any user; do NOT use in production)")
 	sessionKeyFile := fs.String("session-key-file", "", "file with the HMAC key for forward-auth session cookies (or $MUNNEL_SESSION_KEY; ephemeral if unset with --auth-stub)")
+	enrollPassword := fs.String("enroll-password", "", "password gating self-service token issuance via POST /__munnel/token (or $MUNNEL_ENROLL_PASSWORD)")
 	scheme := fs.String("public-scheme", "http", "scheme in generated URLs (use \"https\" behind a TLS proxy like Caddy)")
 	publicPort := fs.String("public-port", "", "port in generated URLs (defaults to the proxy port; set \"443\" behind a TLS proxy)")
 	maxBodyMB := fs.Int("max-body-mb", 32, "max request body in megabytes")
@@ -53,7 +59,7 @@ func run() int {
 
 usage:
   munnel-server [flags]
-  munnel-server mint --sub <name> [--ttl 24h] [--key-file <path>]
+  munnel-server mint --sub <name> [--ttl 24h] [--key-file <path>] [--protect]
 
 flags:
 `)
@@ -76,15 +82,39 @@ flags:
 		return 2
 	}
 
+	// Reserved names: --reserved-file wins, else $MUNNEL_RESERVED (handy in a
+	// docker .env, which redeploys preserve).
+	reservedInline := ""
+	if *reservedFile == "" {
+		reservedInline = strings.TrimSpace(os.Getenv("MUNNEL_RESERVED"))
+	}
 	auth, err := server.NewAuthenticatorWith(server.AuthOptions{
-		Tokens:      *authTokens,
-		AuthFile:    *authFile,
-		SigningKey:  signingKey,
-		RevokedFile: *revokedFile,
+		Tokens:       *authTokens,
+		AuthFile:     *authFile,
+		SigningKey:   signingKey,
+		RevokedFile:  *revokedFile,
+		ReservedFile: *reservedFile,
+		Reserved:     reservedInline,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "munnel-server: %v\n", err)
 		return 2
+	}
+
+	// TLS control port: on when a certificate is configured. A certificate
+	// that cannot be loaded yet (Caddy may still be obtaining it) is only a
+	// warning; the listener retries on every handshake.
+	var controlTLS *tls.Config
+	switch {
+	case (*tlsCertFile == "") != (*tlsKeyFile == ""):
+		fmt.Fprintln(os.Stderr, "munnel-server: --tls-cert-file and --tls-key-file go together")
+		return 2
+	case *tlsCertFile != "" && *controlTLSAddr != "":
+		cf, err := server.NewCertFile(*tlsCertFile, *tlsKeyFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: control TLS certificate not loaded yet (%v); TLS handshakes fail until it is\n", err)
+		}
+		controlTLS = &tls.Config{GetCertificate: cf.GetCertificate, MinVersion: tls.VersionTLS12}
 	}
 
 	// Forward-auth: only the stub provider is wired here (dev/test). A real
@@ -101,15 +131,24 @@ flags:
 		fmt.Fprintln(os.Stderr, "warning: --auth-stub trusts any submitted user — dev/test only, not for production")
 	}
 
+	// Self-service token issuance: --enroll-password flag wins, else env.
+	enrollPW := *enrollPassword
+	if enrollPW == "" {
+		enrollPW = strings.TrimSpace(os.Getenv("MUNNEL_ENROLL_PASSWORD"))
+	}
+
 	srv, err := server.New(server.Config{
 		Domain:         *domain,
 		ControlAddr:    *controlAddr,
+		ControlTLSAddr: *controlTLSAddr,
+		ControlTLS:     controlTLS,
 		ProxyAddr:      *proxyAddr,
 		PublicPort:     *publicPort,
 		PublicScheme:   *scheme,
 		MaxRequestBody: int64(*maxBodyMB) << 20,
 		Auth:           auth,
 		FA:             fa,
+		EnrollPassword: enrollPW,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "munnel-server: %v\n", err)
@@ -212,5 +251,8 @@ func runMint(args []string) int {
 		fmt.Println("protect: forward-auth mandated on this tunnel")
 	}
 	fmt.Println("\nTo revoke, add the token id above to --revoked-file and restart.")
+	if *sub != "" {
+		fmt.Printf("To reserve %q for this token only (TLS only), add \"%s %s\" to --reserved-file and restart.\n", *sub, *sub, id)
+	}
 	return 0
 }

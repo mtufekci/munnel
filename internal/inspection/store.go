@@ -11,12 +11,12 @@ import (
 
 // Record is one captured HTTP exchange, request and response.
 type Record struct {
-	ID        int64     `json:"id"`
-	Time      time.Time `json:"time"`
-	Duration  int64     `json:"duration_ms"`
-	Replayed  bool      `json:"replayed"` // produced by a replay, not live traffic
-	Errored   bool      `json:"errored"`
-	Error     string    `json:"error,omitempty"`
+	ID       int64     `json:"id"`
+	Time     time.Time `json:"time"`
+	Duration int64     `json:"duration_ms"`
+	Replayed bool      `json:"replayed"` // produced by a replay, not live traffic
+	Errored  bool      `json:"errored"`
+	Error    string    `json:"error,omitempty"`
 
 	Method       string      `json:"method"`
 	Path         string      `json:"path"`
@@ -24,10 +24,10 @@ type Record struct {
 	ReqBody      string      `json:"req_body"`
 	ReqTruncated bool        `json:"req_body_truncated"`
 
-	Status       int         `json:"status"`
-	RespHeaders  http.Header `json:"resp_headers"`
-	RespBody     string      `json:"resp_body"`
-	RespTruncated bool       `json:"resp_body_truncated"`
+	Status        int         `json:"status"`
+	RespHeaders   http.Header `json:"resp_headers"`
+	RespBody      string      `json:"resp_body"`
+	RespTruncated bool        `json:"resp_body_truncated"`
 }
 
 // DefaultCapacity is the ring buffer size of a Store.

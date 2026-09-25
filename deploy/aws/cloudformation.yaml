@@ -33,6 +33,7 @@ Resources:
         - { IpProtocol: tcp, FromPort: 80,   ToPort: 80,   CidrIp: 0.0.0.0/0 }
         - { IpProtocol: tcp, FromPort: 443,  ToPort: 443,  CidrIp: 0.0.0.0/0 }
         - { IpProtocol: tcp, FromPort: 7001, ToPort: 7001, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 7002, ToPort: 7002, CidrIp: 0.0.0.0/0 }  # TLS control port
 
   EIP:
     Type: AWS::EC2::EIP

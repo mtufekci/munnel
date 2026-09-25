@@ -1,5 +1,5 @@
 // Azure Bicep template for the munnel tunnel server.
-// Provisions: VNet + subnet, NSG (22/80/443/7001), static public IP, NIC,
+// Provisions: VNet + subnet, NSG (22/80/443/7001/7002), static public IP, NIC,
 // Ubuntu 22.04 VM with cloud-init userData (Docker + /opt/munnel/.env + unit).
 //
 // Deploy via deploy/azure/deploy.sh, or directly:
@@ -40,6 +40,7 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2024-03-01' = {
       { name: 'AllowHTTP';   properties: { priority: 110; protocol: 'Tcp'; access: 'Allow'; direction: 'Inbound'; sourceAddressPrefix: '*'; sourcePortRange: '*'; destinationAddressPrefix: '*'; destinationPortRange: '80' } }
       { name: 'AllowHTTPS';  properties: { priority: 120; protocol: 'Tcp'; access: 'Allow'; direction: 'Inbound'; sourceAddressPrefix: '*'; sourcePortRange: '*'; destinationAddressPrefix: '*'; destinationPortRange: '443' } }
       { name: 'AllowMunnel'; properties: { priority: 130; protocol: 'Tcp'; access: 'Allow'; direction: 'Inbound'; sourceAddressPrefix: '*'; sourcePortRange: '*'; destinationAddressPrefix: '*'; destinationPortRange: '7001' } }
+      { name: 'AllowMunnelTLS'; properties: { priority: 131; protocol: 'Tcp'; access: 'Allow'; direction: 'Inbound'; sourceAddressPrefix: '*'; sourcePortRange: '*'; destinationAddressPrefix: '*'; destinationPortRange: '7002' } }
     ]
   }
 }

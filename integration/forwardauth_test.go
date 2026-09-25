@@ -58,11 +58,11 @@ func startServerWithFA(t *testing.T, fa *forwardauth.Manager) *server.Server {
 func connectT(t *testing.T, srv *server.Server, port int, sub string, protect bool) *client.Tunnel {
 	t.Helper()
 	tun, err := client.New(client.Config{
-		LocalPort:   port,
-		ServerAddr:  srv.ControlListener().Addr().String(),
-		Subdomain:   sub,
-		Protect:     protect,
-		Inspect:     false,
+		LocalPort:  port,
+		ServerAddr: srv.ControlListener().Addr().String(),
+		Subdomain:  sub,
+		Protect:    protect,
+		Inspect:    false,
 	})
 	if err != nil {
 		t.Fatal(err)

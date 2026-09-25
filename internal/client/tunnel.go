@@ -3,7 +3,8 @@ package client
 import (
 	"bufio"
 	"context"
-	"encoding/json"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -19,12 +20,12 @@ import (
 type EventKind string
 
 const (
-	EventConnecting    EventKind = "connecting"
-	EventConnected     EventKind = "connected"
-	EventReconnecting  EventKind = "reconnecting"
-	EventDisconnected  EventKind = "disconnected"
-	EventRequest       EventKind = "request"
-	EventShuttingDown  EventKind = "shutdown"
+	EventConnecting   EventKind = "connecting"
+	EventConnected    EventKind = "connected"
+	EventReconnecting EventKind = "reconnecting"
+	EventDisconnected EventKind = "disconnected"
+	EventRequest      EventKind = "request"
+	EventShuttingDown EventKind = "shutdown"
 )
 
 // Event is emitted on status changes and each completed request.
@@ -113,6 +114,16 @@ func (t *Tunnel) Run(ctx context.Context) error {
 			return nil
 		}
 		t.setStatus(func(s *Status) { s.Connected = false })
+		var rej *rejectedError
+		if errors.As(err, &rej) && rej.code == proto.CodeTLSRequired {
+			// Each retry would resend the token in plaintext to a server
+			// that will never accept it there. Stay down, with the reason
+			// on screen, until the user quits.
+			t.emit(Event{Kind: EventDisconnected, Message: err.Error() + " (not retrying: that would resend the token in plaintext)"})
+			<-ctx.Done()
+			t.emit(Event{Kind: EventShuttingDown})
+			return nil
+		}
 		t.emit(Event{Kind: EventDisconnected, Message: err.Error()})
 
 		select {
@@ -131,10 +142,20 @@ func (t *Tunnel) Run(ctx context.Context) error {
 	}
 }
 
+// dial connects to the control port: plain TCP, or TLS (handshake included,
+// so a bad certificate or pin fails here) when cfg.TLS is set.
+func (t *Tunnel) dial(ctx context.Context) (net.Conn, error) {
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	if !t.cfg.TLS {
+		return d.DialContext(ctx, "tcp", t.cfg.ServerAddr)
+	}
+	td := &tls.Dialer{NetDialer: d, Config: t.cfg.tlsConfig()}
+	return td.DialContext(ctx, "tcp", t.cfg.ServerAddr)
+}
+
 // connectOnce performs the handshake and pumps one mux session to completion.
 func (t *Tunnel) connectOnce(ctx context.Context) error {
-	d := net.Dialer{Timeout: 10 * time.Second}
-	conn, err := d.DialContext(ctx, "tcp", t.cfg.ServerAddr)
+	conn, err := t.dial(ctx)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", t.cfg.ServerAddr, err)
 	}
@@ -162,20 +183,21 @@ func (t *Tunnel) connectOnce(ctx context.Context) error {
 		Subdomain: t.cfg.Subdomain,
 		Protected: t.cfg.Protect,
 	}
-	if err := json.NewEncoder(conn).Encode(hello); err != nil {
+	if err := proto.WriteMessage(conn, hello); err != nil {
 		return fmt.Errorf("handshake write: %w", err)
 	}
 	br := bufio.NewReader(conn)
 	var ack proto.Ack
-	if err := json.NewDecoder(br).Decode(&ack); err != nil {
+	if err := proto.ReadMessage(br, &ack); err != nil {
 		return fmt.Errorf("handshake read: %w", err)
 	}
 	if !ack.OK {
-		return fmt.Errorf("server rejected connection: %s", ack.Error)
+		return &rejectedError{msg: ack.Error, code: ack.Code}
 	}
 	_ = conn.SetDeadline(time.Time{})
 
 	sess := mux.NewClientSession(conn, br)
+	t.cfg.tuneSession(sess)
 	sess.OnStream = func(st *mux.Stream) {
 		go func() {
 			rec := t.fwd.Serve(st)
@@ -209,6 +231,11 @@ func (t *Tunnel) connectOnce(ctx context.Context) error {
 	}
 	return err
 }
+
+// rejectedError is a refusal in the handshake ack; code is proto.Ack.Code.
+type rejectedError struct{ msg, code string }
+
+func (e *rejectedError) Error() string { return "server rejected connection: " + e.msg }
 
 func (t *Tunnel) setStatus(f func(*Status)) {
 	t.mu.Lock()

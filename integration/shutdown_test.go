@@ -3,13 +3,13 @@
 // These verify the client's Run/Events shutdown contract against a real
 // in-process server:
 //
-//   1. Cancelling ctx while a tunnel is connected (idle) must make Run return
-//      and close Events() — not block forever on the live mux session.
-//   2. The same must hold with a request stream mid-flight: the ctx watcher in
-//      connectOnce closes the socket so sess.Run unblocks independently of any
-//      in-flight forwarder goroutine.
-//   3. EventShuttingDown is emitted before the channel closes in the normal
-//      (not-overloaded) case.
+//  1. Cancelling ctx while a tunnel is connected (idle) must make Run return
+//     and close Events() — not block forever on the live mux session.
+//  2. The same must hold with a request stream mid-flight: the ctx watcher in
+//     connectOnce closes the socket so sess.Run unblocks independently of any
+//     in-flight forwarder goroutine.
+//  3. EventShuttingDown is emitted before the channel closes in the normal
+//     (not-overloaded) case.
 //
 // Before the fix, connectOnce had no ctx hook: sess.Run blocked on the live
 // socket, Run never reached its ctx.Err() check, Events() was never closed, and
@@ -35,10 +35,10 @@ func startTunnel(t *testing.T, localPort int, sub string) (*client.Tunnel, *serv
 	t.Helper()
 	srv, _ := startServer(t, "")
 	tun, err := client.New(client.Config{
-		LocalPort:   localPort,
-		ServerAddr:  srv.ControlListener().Addr().String(),
-		Subdomain:   sub,
-		Inspect:     false,
+		LocalPort:  localPort,
+		ServerAddr: srv.ControlListener().Addr().String(),
+		Subdomain:  sub,
+		Inspect:    false,
 	})
 	if err != nil {
 		t.Fatal(err)

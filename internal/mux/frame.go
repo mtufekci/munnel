@@ -60,13 +60,23 @@ func frameName(t byte) string {
 	return fmt.Sprintf("0x%02x", t)
 }
 
+// coalesceMax is the largest payload writeFrame copies next to its header to
+// emit the frame in one Write. Over TLS every Write becomes a record, so a
+// separate 9-byte header write would double the record count for small frames.
+const coalesceMax = 64 << 10
+
 // writeFrame serializes one frame onto w. Callers must hold write
 // serialization themselves (Session does this internally).
 func writeFrame(w io.Writer, typ byte, streamID uint32, payload []byte) error {
+	if len(payload) <= coalesceMax {
+		buf := make([]byte, HeaderSize+len(payload))
+		putHeader(buf, typ, streamID, len(payload))
+		copy(buf[HeaderSize:], payload)
+		_, err := w.Write(buf)
+		return err
+	}
 	var hdr [HeaderSize]byte
-	hdr[0] = typ
-	binary.BigEndian.PutUint32(hdr[1:5], streamID)
-	binary.BigEndian.PutUint32(hdr[5:9], uint32(len(payload)))
+	putHeader(hdr[:], typ, streamID, len(payload))
 	if _, err := w.Write(hdr[:]); err != nil {
 		return err
 	}
@@ -76,6 +86,12 @@ func writeFrame(w io.Writer, typ byte, streamID uint32, payload []byte) error {
 		}
 	}
 	return nil
+}
+
+func putHeader(b []byte, typ byte, streamID uint32, n int) {
+	b[0] = typ
+	binary.BigEndian.PutUint32(b[1:5], streamID)
+	binary.BigEndian.PutUint32(b[5:9], uint32(n))
 }
 
 // readFrame reads exactly one frame from r. The returned payload slice is

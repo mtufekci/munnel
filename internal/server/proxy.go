@@ -2,6 +2,8 @@ package server
 
 import (
 	"bufio"
+	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/mtufekci/munnel/internal/forwardauth"
 	"github.com/mtufekci/munnel/internal/proto"
+	"github.com/mtufekci/munnel/internal/token"
 )
 
 // Hop-by-hop headers never forwarded over a tunnel.
@@ -58,6 +61,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"ok":true,"tunnels":%d}`, s.reg.Count())
 		return
+	case r.URL.Path == "/__munnel/token" && r.Method == http.MethodPost:
+		s.handleTokenIssue(w, r)
+		return
 	case host == "" || host == s.cfg.Domain || host == "www."+s.cfg.Domain ||
 		(host != "" && net.ParseIP(host) != nil) || isAddrHost(host, s.cfg.ProxyAddr):
 		s.serveLanding(w, r)
@@ -75,7 +81,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	c := s.reg.Get(sub)
-	if c == nil {
+	if c == nil || !c.waitReady(r.Context()) {
 		s.errorPage(w, http.StatusBadGateway, "tunnel offline",
 			fmt.Sprintf("no client is connected for %s.%s", sub, s.cfg.Domain))
 		return
@@ -101,6 +107,92 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.proxyTo(w, r, c)
+}
+
+// Self-service token issuance limits: a dev can mint a token with just the
+// enrollment password, so the server caps how long those tokens may live.
+const (
+	defaultEnrollTTL = 7 * 24 * time.Hour
+	maxEnrollTTL     = 30 * 24 * time.Hour
+)
+
+// tokenIssueRequest is the POST /__munnel/token request body.
+type tokenIssueRequest struct {
+	Sub      string `json:"sub"`
+	Password string `json:"password"`
+	TTL      string `json:"ttl"`
+}
+
+// tokenIssueResponse is the POST /__munnel/token reply.
+type tokenIssueResponse struct {
+	Token   string `json:"token"`
+	ID      string `json:"id"`
+	Sub     string `json:"sub,omitempty"`
+	Expires string `json:"expires,omitempty"` // RFC3339; empty = never
+}
+
+// handleTokenIssue mints a signed, scoped token for a dev who knows the
+// enrollment password. This is the self-service path: no SSH, no operator —
+// `munnel token --sub alice` posts here and the returned token is written to
+// the dev's ~/.munnel/config. Disabled (404) unless EnrollPassword is set and
+// a signing key is configured.
+func (s *Server) handleTokenIssue(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.EnrollPassword == "" {
+		s.tokenIssueError(w, http.StatusNotFound, "self-service token issuance is disabled on this server")
+		return
+	}
+	var req tokenIssueRequest
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err != nil || json.Unmarshal(body, &req) != nil {
+		s.tokenIssueError(w, http.StatusBadRequest, "invalid request body (expected JSON: sub, password, ttl)")
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(req.Password), []byte(s.cfg.EnrollPassword)) != 1 {
+		s.tokenIssueError(w, http.StatusUnauthorized, "invalid enrollment password")
+		return
+	}
+
+	sub := proto.NormalizeSubdomain(req.Sub)
+	if sub != "" && !proto.ValidSubdomain(sub) {
+		s.tokenIssueError(w, http.StatusBadRequest, "invalid subdomain (lowercase letters, digits, hyphens; ≤63 chars)")
+		return
+	}
+	// A reserved name belongs to the tokens the operator listed for it; the
+	// enrollment password must not mint another one (the handshake would
+	// refuse it anyway, but a token for it should never exist).
+	if sub != "" && s.cfg.Auth.IsReserved(sub) {
+		s.tokenIssueError(w, http.StatusForbidden, fmt.Sprintf("subdomain %q is reserved; ask your operator", sub))
+		return
+	}
+
+	ttl := defaultEnrollTTL
+	if req.TTL != "" {
+		ttl, err = time.ParseDuration(req.TTL)
+		if err != nil || ttl <= 0 {
+			s.tokenIssueError(w, http.StatusBadRequest, "invalid ttl (examples: 24h, 168h, 720h)")
+			return
+		}
+	}
+	if ttl > maxEnrollTTL {
+		ttl = maxEnrollTTL
+	}
+
+	tok, err := s.cfg.Auth.Mint(token.MintOpts{Sub: sub, TTL: ttl})
+	if err != nil {
+		s.tokenIssueError(w, http.StatusInternalServerError, "token issuance unavailable: signed tokens not enabled on this server")
+		return
+	}
+
+	resp := tokenIssueResponse{Token: tok, ID: token.IDOf(tok), Sub: sub, Expires: time.Now().Add(ttl).UTC().Format(time.RFC3339)}
+	s.log.Printf("token issued: id=%s sub=%q ttl=%s remote=%s", resp.ID, sub, ttl, remoteIP(r.RemoteAddr))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) tokenIssueError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 // proxyTo forwards one public request over the tunnel and relays the response.
@@ -167,19 +259,52 @@ func (s *Server) proxyTo(w http.ResponseWriter, r *http.Request, c *Client) {
 	out.WriteString("\r\n")
 	out.Write(body)
 	if err := out.Flush(); err != nil {
-		st.Reset()
+		st.Abort()
+		s.errorPage(w, http.StatusBadGateway, "tunnel error", "could not send the request through the tunnel")
 		return
 	}
 	_ = st.CloseWrite() // request fully sent; client reads until EOF/body-len
 
-	// Read the response the client relayed back from localhost.
+	// A public client that disconnects must end the request on the developer's
+	// machine too. Abort sends a real RESET even though our half is already
+	// closed; the tunnel client then drops the local connection. Without this
+	// an SSE response would stay open locally until the app wrote again, and
+	// resp.Body.Close below would drain it for as long as the app kept it up.
+	stopWatch := context.AfterFunc(r.Context(), st.Abort)
+	defer stopWatch()
+
+	// Read the response the client relayed back from localhost, giving up
+	// (504) if no headers arrive in time. Only the headers are bounded: a
+	// streaming body may take as long as it likes afterwards.
+	headerTimer := time.AfterFunc(s.cfg.ResponseHeaderTimeout, st.Abort)
 	resp, err := http.ReadResponse(bufio.NewReader(st), r)
+	if !headerTimer.Stop() {
+		if err == nil {
+			resp.Body.Close() // stream already aborted: returns at once
+		}
+		s.errorPage(w, http.StatusGatewayTimeout, "tunnel timeout",
+			fmt.Sprintf("the local service sent no response headers within %s", s.cfg.ResponseHeaderTimeout))
+		return
+	}
 	if err != nil {
+		st.Abort()
+		if r.Context().Err() != nil {
+			return // the public client is gone; nobody to answer
+		}
 		s.errorPage(w, http.StatusBadGateway, "tunnel error",
 			"the tunnel client closed the stream without a response")
 		return
 	}
-	defer resp.Body.Close()
+	// Close would drain an unfinished body (an endless one for SSE), so a
+	// response not read to the end is aborted first, which makes the drain
+	// return immediately.
+	complete := r.Method == http.MethodHead
+	defer func() {
+		if !complete {
+			st.Abort()
+		}
+		resp.Body.Close()
+	}()
 
 	dst := w.Header()
 	contentLen := int64(-1)
@@ -214,6 +339,7 @@ func (s *Server) proxyTo(w http.ResponseWriter, r *http.Request, c *Client) {
 			}
 		}
 		if rerr != nil {
+			complete = rerr == io.EOF
 			return
 		}
 	}

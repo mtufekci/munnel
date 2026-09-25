@@ -61,14 +61,14 @@ func newModel(events <-chan client.Event, opts Opts, quit func()) model {
 	s.Spinner = spinner.Dot
 	s.Style = stTag
 	return model{
-		opts:   opts,
-		events: events,
-		quit:   quit,
-		status: "connecting",
+		opts:    opts,
+		events:  events,
+		quit:    quit,
+		status:  "connecting",
 		message: "connecting to " + opts.ServerAddr + "…",
-		spin:   s,
-		width:  100,
-		height: 24,
+		spin:    s,
+		width:   100,
+		height:  24,
 	}
 }
 
@@ -173,7 +173,7 @@ func (m model) View() string {
 		line = fmt.Sprintf("%s  %s %s %s", title,
 			stTag.Render(m.url), stDim.Render("→"), stBlue.Render(m.opts.Target))
 	}
-	b.WriteString(stHeaderBar.Width(m.width).Render(" " + line) + "\n")
+	b.WriteString(stHeaderBar.Width(m.width).Render(" "+line) + "\n")
 
 	// body: request log
 	avail := m.height - lipgloss.Height(line) - 4 // header + footer + margins

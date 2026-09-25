@@ -7,6 +7,12 @@
 #   MUNNEL_SIGNING_KEY=<hex>     # optional: enable HMAC-signed scoped tokens
 #   MUNNEL_AUTH_STUB=true        # optional: dev/test forward-auth (trusts any user)
 #   MUNNEL_SESSION_KEY=<hex>     # optional: forward-auth session cookie key
+#   MUNNEL_ENROLL_PASSWORD=<pw>  # optional: self-service token issuance (munnel token)
+#   MUNNEL_TLS_CERT_FILE=<path>  # optional: enable the TLS control port 7002 with this
+#   MUNNEL_TLS_KEY_FILE=<path>   #   certificate + key, e.g. Caddy's certificate for the
+#                                #   apex, read from the caddy_data volume (see deploy/README.md)
+#   MUNNEL_RESERVED=<name>=<id>  # optional: reserved names, "name=tokID[,tokID]" entries
+#                                #   separated by ';' (claimable only by those tokens, over TLS)
 #
 # DNS: point an A record for both the apex and the wildcard at your host:
 #   tunnels.example.com     A  <host-ip>
@@ -21,14 +27,26 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "7001:7001"               # control + multiplexing (tunnel clients dial this)
+      - "7001:7001"               # control + multiplexing, plaintext (tunnel clients dial this)
+      - "7002:7002"               # control + multiplexing over TLS (only listens once a cert is set)
       - "127.0.0.1:8080:8080"     # public HTTP ingress — only Caddy reaches this
     environment:
       - MUNNEL_SIGNING_KEY=${MUNNEL_SIGNING_KEY:-}
       - MUNNEL_SESSION_KEY=${MUNNEL_SESSION_KEY:-}
+      - MUNNEL_ENROLL_PASSWORD=${MUNNEL_ENROLL_PASSWORD:-}
+      - MUNNEL_RESERVED=${MUNNEL_RESERVED:-}
+    volumes:
+      # Caddy's storage, read-only: the TLS control port can reuse the
+      # Let's Encrypt certificate Caddy keeps renewed for the apex domain
+      # (munnel-server reloads it when the files change).
+      - caddy_data:/caddy-data:ro
     command:
       - --domain=${MUNNEL_DOMAIN:-localhost}
       - --control-addr=:7001
+      - --control-tls-addr=:7002
+      # Empty (the default) keeps the TLS port off; both must be set together.
+      - --tls-cert-file=${MUNNEL_TLS_CERT_FILE:-}
+      - --tls-key-file=${MUNNEL_TLS_KEY_FILE:-}
       - --proxy-addr=:8080
       - --public-scheme=${MUNNEL_SCHEME:-https}
       - --public-port=443

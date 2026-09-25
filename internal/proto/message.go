@@ -7,6 +7,10 @@
 package proto
 
 import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"io"
 	"regexp"
 	"strings"
 )
@@ -37,13 +41,50 @@ type Ack struct {
 	Subdomain string `json:"subdomain,omitempty"`
 	PublicURL string `json:"public_url,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Code classifies a refusal the client must act on, not just display.
+	// Older clients ignore it and older servers never send it.
+	Code string `json:"code,omitempty"`
 }
+
+// CodeTLSRequired refuses a reserved name over the plaintext control port.
+// The client stops reconnecting: every attempt would resend the token in
+// the clear to a server that will never accept it there.
+const CodeTLSRequired = "tls_required"
 
 // OpenMeta is the JSON payload of a mux FrameOpen, sent by the server when it
 // opens a stream for an incoming public request.
 type OpenMeta struct {
 	Host       string `json:"host"`
 	RemoteAddr string `json:"remote_addr"`
+}
+
+// WriteMessage writes v as one JSON line (the handshake framing), in a
+// single Write so it cannot interleave with anything else on the socket.
+func WriteMessage(w io.Writer, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(b, '\n'))
+	return err
+}
+
+// ReadMessage reads exactly one newline-terminated JSON line from br and
+// decodes it into v. The same br is then handed to the mux, so it must hold
+// precisely the bytes after the newline. A json.Decoder cannot guarantee that:
+// it buffers ahead (swallowing early frames) or stops right after the closing
+// brace (leaving the '\n' behind, which shifts every later frame by one byte).
+// Go 1.27's decoder does the latter for any message of exactly 64, 128, 256…
+// bytes. Reading the line ourselves keeps the framing exact.
+func ReadMessage(br *bufio.Reader, v any) error {
+	line, err := br.ReadSlice('\n')
+	if errors.Is(err, bufio.ErrBufferFull) {
+		return errors.New("handshake message too long")
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(line, v)
 }
 
 var subdomainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62})$`)

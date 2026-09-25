@@ -59,14 +59,15 @@ munnel 3000 -s myapp -t <TOKEN> --server tunnels.example.com:7001
 
 ```
 Internet ──:443──► Caddy (TLS, on-demand certs) ──► :8080 munnel-server (HTTP ingress)
-            :7001 ► munnel-server (control/mux, clients connect here)
+            :7001 ► munnel-server (control/mux, plaintext, clients connect here)
+            :7002 ► munnel-server (control/mux over TLS; off until a certificate is configured)
                           │ ask http://ask:8080/check  (Caddy calls this before issuing a cert)
                           ▼
                      approve.py (token-gated TLS approval)
 ```
 
 - **Caddy** terminates TLS and fronts the HTTP ingress on `:8080` (localhost only).
-- **munnel-server** runs the control/mux protocol on `:7001` and the HTTP ingress on `:8080`.
+- **munnel-server** runs the control/mux protocol on `:7001` (and over TLS on `:7002` once enabled) and the HTTP ingress on `:8080`.
 - **approve.py** gates Caddy's on-demand TLS: it only lets a subdomain get a cert if a connected tunnel's token is valid for that subdomain.
 
 Files of interest on the VM:
@@ -93,6 +94,103 @@ cd /opt/munnel && sudo docker compose up -d --build
 
 See [docs/OPERATIONS.md](../docs/OPERATIONS.md) for the full operator runbook
 (token rotation, logs, troubleshooting, teardown).
+
+## TLS control port (7002)
+
+`:7001` is plaintext: tokens and tunnelled traffic cross the network in
+cleartext between clients and the VM. `:7002` speaks the same protocol over
+TLS. It reuses the Let's Encrypt certificate Caddy already keeps for the apex
+domain: `docker-compose.yml` mounts Caddy's storage read-only at
+`/caddy-data` in the munnel-server container, and munnel-server re-reads the
+files when Caddy renews them. Nothing changes for existing clients; 7001
+stays up.
+
+1. Open TCP 7002 in the cloud firewall. The templates in this directory now
+   include it for new deployments; an existing VM needs it added by hand
+   (for example on Azure:
+   `az network nsg list -g <resource-group> -o table`, then
+   `az network nsg rule create -g <resource-group> --nsg-name <nsg> -n AllowMunnelTLS --priority 131 --protocol Tcp --destination-port-ranges 7002 --access Allow --direction Inbound`).
+2. Point munnel-server at the certificate in `/opt/munnel/.env` (the deploy
+   workflow never touches `.env`):
+
+   ```sh
+   MUNNEL_TLS_CERT_FILE=/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/<domain>/<domain>.crt
+   MUNNEL_TLS_KEY_FILE=/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/<domain>/<domain>.key
+   ```
+
+   `<domain>` is `MUNNEL_DOMAIN`. If Caddy fell back to ZeroSSL, the issuer
+   directory is `acme.zerossl.com-v2-dv90` instead; list
+   `caddy/certificates/` in the `caddy_data` volume to check.
+3. Redeploy (`docker compose up -d --build`, or the Deploy server workflow).
+   The startup log shows `control-tls=[::]:7002`; a warning about the
+   certificate means the path is wrong or Caddy has not obtained it yet.
+4. Check from a laptop:
+   `openssl s_client -connect <domain>:7002 -servername <domain> </dev/null | openssl x509 -noout -subject -dates`,
+   then `munnel 3000 --tls --server <domain>:7002`.
+
+Clients connect with the apex host name (`<domain>:7002`), which is the name
+on the certificate. No Caddyfile change is needed.
+
+## Reserved names
+
+A reserved name can be claimed only by the signed-token ids listed for it,
+and only over the TLS port. In `/opt/munnel/.env`, entries separated by `;`:
+
+```sh
+MUNNEL_RESERVED=hop=tok_0123456789abcdef
+```
+
+Outside docker, use `--reserved-file` with one `name tokenID[,tokenID...]`
+per line. Token ids are not secrets. Changes need a restart.
+
+## Operator note: the hop tunnel
+
+hop room is exposed at `https://hop.<domain>/` through a munnel tunnel from
+the founder's laptop. That tunnel carries a long-lived token and signed-in
+sessions, so it runs only over TLS on a reserved name. One-time setup, on the
+VM and the laptop:
+
+1. **Mint the hop token** on the VM (the signing key is already in the
+   container's environment):
+
+   ```sh
+   cd /opt/munnel
+   sudo docker compose exec munnel-server /munnel-server mint --sub hop --ttl 8760h
+   ```
+
+   It prints the token id (`tok_…`) and the token (`m1.…`). Move the token
+   to the laptop without pasting it anywhere else (it is valid for a year),
+   into `~/.munnel/hop.config` with mode 0600:
+
+   ```sh
+   server=<domain>:7002
+   tls=true
+   token=<TOKEN>
+   ```
+
+2. **Reserve `hop` for that token id**: add
+   `MUNNEL_RESERVED=hop=<tok_id>` to `/opt/munnel/.env` (append
+   `;name=tok_…` for more names).
+3. **Enable the TLS listener on 7002**: the two `MUNNEL_TLS_*` lines from
+   [TLS control port](#tls-control-port-7002) in the same `.env`.
+4. **Open 7002** in the NSG / firewall (step 1 of that section).
+5. **Redeploy** and check the startup log for `control-tls=` and
+   `reserved=hop`.
+6. **Laptop**: rebuild and install the client (`./install-dev.sh`; `munnel
+   --help` must list `--tls`), then run
+   `MUNNEL_CONFIG=~/.munnel/hop.config munnel <port> -s hop --tls --inspect=false`.
+   Over plaintext 7001 the server now refuses `hop`, and nobody else can
+   claim it, even while the laptop is asleep.
+7. **Tell the other munnel users**: 7002 exists and 7001 stays for now; move
+   to TLS by rebuilding the client and setting `tls=true` and
+   `server=<domain>:7002` in `~/.munnel/config`; `hop` is reserved (the
+   enrollment endpoint will refuse it); the local inspector now opens only
+   through the link munnel prints.
+
+To rotate the hop token, mint a new one, add its id next to the old one
+(`hop=tok_new,tok_old`), redeploy, switch the laptop, then drop the old id and
+redeploy again. A token scoped to `hop` whose id is no longer listed cannot
+claim anything.
 
 ## Why scp instead of git clone / a container registry
 

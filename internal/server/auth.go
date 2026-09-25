@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/mtufekci/munnel/internal/proto"
 	"github.com/mtufekci/munnel/internal/token"
@@ -30,20 +33,31 @@ var errNoToken = errors.New("server requires a token; reconnect with -t <token>"
 // When no tokens AND no signing key are configured the server runs in open
 // mode: any client may connect (fine for a private/hobby server, unsafe on
 // the public internet).
+//
+// Reserved names (--reserved-file) sit on top of both kinds: a reserved
+// subdomain may be claimed only by the signed-token IDs listed for it, and
+// only over the TLS control port, so nobody can squat the name while its
+// owner is offline and its tunnel never runs over plaintext. The server can
+// refuse a plaintext hello only after reading it, token included: a client
+// pointed at the plaintext port sends the token in the clear once, then stops
+// (proto.CodeTLSRequired) instead of resending it on every reconnect.
 type Authenticator struct {
-	tokens   map[string]bool
-	reserved map[string]string // static token → reserved subdomain
-	signing  []byte            // HMAC key for signed tokens; nil = disabled
-	revoked  map[string]bool   // revoked signed-token IDs
-	open     bool
+	tokens        map[string]bool
+	reserved      map[string]string          // static token → reserved subdomain
+	reservedNames map[string]map[string]bool // reserved name → allowed signed-token IDs
+	signing       []byte                     // HMAC key for signed tokens; nil = disabled
+	revoked       map[string]bool            // revoked signed-token IDs
+	open          bool
 }
 
 // AuthOptions configures an Authenticator.
 type AuthOptions struct {
-	Tokens      string   // comma-separated static tokens
-	AuthFile    string   // JSON file: static token → reserved subdomain
-	SigningKey  []byte   // HMAC key for signed tokens (enables them)
-	RevokedFile string   // newline-separated revoked signed-token IDs
+	Tokens       string // comma-separated static tokens
+	AuthFile     string // JSON file: static token → reserved subdomain
+	SigningKey   []byte // HMAC key for signed tokens (enables them)
+	RevokedFile  string // newline-separated revoked signed-token IDs
+	ReservedFile string // reserved names: "name tokenID[,tokenID...]" per line
+	Reserved     string // same entries inline, separated by ';' (e.g. $MUNNEL_RESERVED)
 }
 
 // NewAuthenticator builds an Authenticator from a comma-separated token list
@@ -56,10 +70,11 @@ func NewAuthenticator(tokensCSV, authFile string) (*Authenticator, error) {
 // NewAuthenticatorWith builds an Authenticator from the full option set.
 func NewAuthenticatorWith(opts AuthOptions) (*Authenticator, error) {
 	a := &Authenticator{
-		tokens:   map[string]bool{},
-		reserved: map[string]string{},
-		signing:  opts.SigningKey,
-		revoked:  map[string]bool{},
+		tokens:        map[string]bool{},
+		reserved:      map[string]string{},
+		reservedNames: map[string]map[string]bool{},
+		signing:       opts.SigningKey,
+		revoked:       map[string]bool{},
 	}
 	if opts.Tokens != "" {
 		for _, t := range strings.Split(opts.Tokens, ",") {
@@ -92,6 +107,35 @@ func NewAuthenticatorWith(opts AuthOptions) (*Authenticator, error) {
 			return nil, errf("revoked file: %w", err)
 		}
 		a.revoked = ids
+	}
+	if opts.ReservedFile != "" {
+		f, err := os.Open(opts.ReservedFile)
+		if err != nil {
+			return nil, errf("reserved file: %w", err)
+		}
+		err = parseReserved(f, a.reservedNames)
+		f.Close()
+		if err != nil {
+			return nil, errf("reserved file: %w", err)
+		}
+	}
+	if opts.Reserved != "" {
+		entries := strings.ReplaceAll(opts.Reserved, ";", "\n")
+		if err := parseReserved(strings.NewReader(entries), a.reservedNames); err != nil {
+			return nil, errf("reserved names: %w", err)
+		}
+	}
+	if len(a.reservedNames) > 0 {
+		// Reserved names are held by signed-token IDs; without a signing key no
+		// token could ever claim them, which is certainly a misconfiguration.
+		if len(a.signing) == 0 {
+			return nil, errors.New("reserved names need signed tokens: set a signing key")
+		}
+		for _, sub := range a.reserved {
+			if a.reservedNames[sub] != nil {
+				return nil, errf("auth file gives reserved name %q to a static token; reserved names belong to signed tokens", sub)
+			}
+		}
 	}
 	// Open mode only when there is no auth of any kind configured.
 	a.open = len(a.tokens) == 0 && len(a.signing) == 0
@@ -160,6 +204,114 @@ func (a *Authenticator) ProtectedByToken(tok string) bool {
 		}
 	}
 	return false
+}
+
+// TokenID returns the ID of a valid, unrevoked signed token, or "" for any
+// other token (static, malformed, expired). It identifies the holder for
+// reserved names and for taking over its own stale session.
+func (a *Authenticator) TokenID(tok string) string {
+	if !a.isSigned(tok) {
+		return ""
+	}
+	c, err := token.Parse(a.signing, tok)
+	if err != nil || a.revoked[c.ID] {
+		return ""
+	}
+	return c.ID
+}
+
+// IsReserved reports whether name is a reserved subdomain.
+func (a *Authenticator) IsReserved(name string) bool {
+	return a.reservedNames[name] != nil
+}
+
+// ReservedNames lists the reserved subdomains (for the startup log).
+func (a *Authenticator) ReservedNames() []string {
+	names := make([]string, 0, len(a.reservedNames))
+	for n := range a.reservedNames {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// CheckReserved refuses a reserved name to every token but its listed signed
+// tokens, and to those too unless the control connection is TLS. Unreserved
+// names always pass.
+func (a *Authenticator) CheckReserved(tok, name string, overTLS bool) error {
+	ids := a.reservedNames[name]
+	if ids == nil {
+		return nil
+	}
+	if id := a.TokenID(tok); id == "" || !ids[id] {
+		return errf("subdomain %q is reserved", name)
+	}
+	if !overTLS {
+		return tlsRequiredError{name}
+	}
+	return nil
+}
+
+// tlsRequiredError refuses a reserved name to its own token over plaintext.
+// The handshake marks it proto.CodeTLSRequired so the client stops retrying.
+type tlsRequiredError struct{ name string }
+
+func (e tlsRequiredError) Error() string {
+	return fmt.Sprintf("subdomain %q is reserved for TLS connections: reconnect with --tls to the server's TLS control port", e.name)
+}
+
+// parseReserved reads reserved-name entries into into, one per line:
+//
+//	# comment
+//	hop tok_0123456789abcdef
+//	staging tok_aaaaaaaaaaaaaaaa,tok_bbbbbbbbbbbbbbbb
+//
+// The name comes first, then one or more token IDs (as printed by
+// `munnel-server mint`); commas, spaces or '=' separate them. Token IDs, not
+// tokens: the file is not a secret, and a pasted token is refused.
+func parseReserved(r io.Reader, into map[string]map[string]bool) error {
+	sc := bufio.NewScanner(r)
+	for n := 1; sc.Scan(); n++ {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.FieldsFunc(line, func(r rune) bool { return r == ',' || r == '=' || unicode.IsSpace(r) })
+		name := proto.NormalizeSubdomain(fields[0])
+		if !proto.ValidSubdomain(name) {
+			return errf("line %d: invalid subdomain %q", n, fields[0])
+		}
+		if len(fields) < 2 {
+			return errf("line %d: %q lists no token IDs", n, name)
+		}
+		ids := into[name]
+		if ids == nil {
+			ids = map[string]bool{}
+			into[name] = ids
+		}
+		for _, id := range fields[1:] {
+			if strings.HasPrefix(id, token.Prefix) {
+				return errf("line %d: that is a token, not a token ID (use the tok_… id printed by mint)", n)
+			}
+			if !strings.HasPrefix(id, "tok_") {
+				return errf("line %d: %q is not a token ID (expected tok_…)", n, id)
+			}
+			ids[id] = true
+		}
+	}
+	return sc.Err()
+}
+
+// Mint creates a signed, scoped token using the Authenticator's signing key.
+// Returns an error if signed tokens are not enabled (no signing key configured).
+// This is the self-service issuance path: the /__munnel/token endpoint calls
+// this so a dev can mint their own token with just an enrollment password,
+// without ever touching the signing key.
+func (a *Authenticator) Mint(opts token.MintOpts) (string, error) {
+	if len(a.signing) == 0 {
+		return "", errors.New("signed tokens not enabled (no signing key)")
+	}
+	return token.MintWith(a.signing, opts)
 }
 
 // CheckSubdomain enforces reservation rules for a requested subdomain.

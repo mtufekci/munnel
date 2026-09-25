@@ -17,6 +17,8 @@ var envKeys = []struct{ env, key string }{
 	{"MUNNEL_LOCAL_HOST", "local-host"},
 	{"MUNNEL_MAX_BODY_MB", "max-body-mb"},
 	{"MUNNEL_INSPECT", "inspect"},
+	{"MUNNEL_TLS", "tls"},
+	{"MUNNEL_SERVER_CERT_SHA256", "server-cert-sha256"},
 }
 
 // loadConfigFile reads KEY=VAL defaults from $MUNNEL_CONFIG or ~/.munnel/config.
@@ -84,6 +86,12 @@ func applyDefaults(sf *stringFlags, inspectSet *bool, inspectVal *bool, maxBody 
 		if v := m["inspect"]; v != "" {
 			*inspectSet = true
 			*inspectVal = strings.EqualFold(v, "true")
+		}
+		if v := m["tls"]; v != "" {
+			sf.tls = v
+		}
+		if v := m["server-cert-sha256"]; v != "" {
+			sf.serverCertSHA256 = v
 		}
 	}
 	apply(loadConfigFile())

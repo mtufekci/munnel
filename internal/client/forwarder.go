@@ -3,6 +3,7 @@ package client
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -114,11 +115,29 @@ func (f *Forwarder) Serve(st *mux.Stream) *inspection.Record {
 		return rec
 	}
 
-	out := f.buildLocalRequest(req, body)
+	// Drop the local request as soon as the stream is aborted: the public
+	// viewer disconnected (the server sends RESET) or the tunnel died.
+	// Cancelling the context closes the connection to the local app, so a
+	// streaming handler (SSE) sees its client go away instead of holding the
+	// connection until its next write.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-st.Aborted():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	out := f.buildLocalRequest(req, body).WithContext(ctx)
 	resp, err := f.rt.RoundTrip(out)
 	if err != nil {
 		rec.Errored = true
 		rec.Error = fmt.Sprintf("local service unreachable (%s): %v", f.LocalAddr(), rootCause(err))
+		if aborted(st) {
+			rec.Error = errAbortedMsg
+		}
 		writeRawError(st, http.StatusBadGateway, "munnel: local service "+f.LocalAddr()+" unreachable")
 		rec.Duration = time.Since(start).Milliseconds()
 		return rec
@@ -136,10 +155,25 @@ func (f *Forwarder) Serve(st *mux.Stream) *inspection.Record {
 	if werr != nil {
 		rec.Errored = true
 		rec.Error = "tunnel write failed: " + werr.Error()
+		if aborted(st) {
+			rec.Error = errAbortedMsg
+		}
 	}
 	rec.RespBody, rec.RespTruncated = capBuf.bytes(), capBuf.truncated
 	rec.Duration = time.Since(start).Milliseconds()
 	return rec
+}
+
+const errAbortedMsg = "aborted: the viewer disconnected or the tunnel closed"
+
+// aborted reports whether the stream was reset or its session died.
+func aborted(st *mux.Stream) bool {
+	select {
+	case <-st.Aborted():
+		return true
+	default:
+		return false
+	}
 }
 
 // isUpgrade reports whether req is a protocol-upgrade request (WebSocket, etc.).
