@@ -6,11 +6,12 @@
 #
 # Caddy v2.8+ requires a permission module for on-demand TLS to prevent abuse
 # (a stranger could otherwise force your server to issue certs for arbitrary
-# domains). The `ask` endpoint below — the `ask` service in
-# docker-compose.yml (approve.py) — approves only your apex and its
-# subdomains, refusing everything else. No DNS-provider plugin or wildcard
-# certificate is needed: each subdomain's A record (the wildcard) resolves to
-# this host, so the HTTP-01 challenge succeeds.
+# domains). The `ask` endpoint below is munnel-server's --ask-addr listener
+# (internal to the compose network): it approves only your apex and
+# subdomains with a live tunnel, refusing everything else, so nobody can make
+# the server request certificates for made-up names. No DNS-provider plugin
+# or wildcard certificate is needed: each subdomain's A record (the wildcard)
+# resolves to this host, so the HTTP-01 challenge succeeds.
 #
 # If you prefer a wildcard certificate instead, build Caddy with a DNS
 # provider plugin (e.g. cloudflare), drop the `*.{$MUNNEL_DOMAIN}` block's
@@ -19,7 +20,7 @@
 {
 	email admin@example.com
 	on_demand_tls {
-		ask http://ask:8080/check
+		ask http://munnel-server:8081/check
 	}
 }
 

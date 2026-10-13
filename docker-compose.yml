@@ -1,4 +1,4 @@
-# munnel server, production shape: munnel-server + Caddy (TLS) + ask endpoint.
+# munnel server, production shape: munnel-server + Caddy (TLS).
 #
 # Configure via .env (see .env.example):
 #   MUNNEL_DOMAIN=tunnels.example.com
@@ -19,9 +19,10 @@
 #   *.tunnels.example.com   A  <host-ip>
 #
 # Caddy obtains per-subdomain Let's Encrypt certs on demand (on first request
-# to each *.tunnels.example.com subdomain). The `ask` service gates issuance to
-# your own domain only, which Caddy requires (v2.8+) to prevent on-demand TLS
-# abuse. The apex cert is obtained normally on startup.
+# to each *.tunnels.example.com subdomain). Caddy first asks munnel-server
+# (--ask-addr, :8081 on the compose network only), which approves only the
+# apex and subdomains with a live tunnel; Caddy v2.8+ requires such a check to
+# prevent on-demand TLS abuse. The apex cert is obtained normally on startup.
 services:
   munnel-server:
     build: .
@@ -48,6 +49,8 @@ services:
       - --tls-cert-file=${MUNNEL_TLS_CERT_FILE:-}
       - --tls-key-file=${MUNNEL_TLS_KEY_FILE:-}
       - --proxy-addr=:8080
+      # Caddy's on-demand TLS check; deliberately not under `ports:`.
+      - --ask-addr=:8081
       - --public-scheme=${MUNNEL_SCHEME:-https}
       - --public-port=443
       - --auth-tokens=${MUNNEL_TOKENS:-}
@@ -57,15 +60,6 @@ services:
       # affects tunnels that opt into --protect. Do NOT enable in production;
       # wire a real OIDC provider (forwardauth.Provider) instead.
       - --auth-stub=${MUNNEL_AUTH_STUB:-false}
-
-  ask:
-    image: python:3-alpine
-    restart: unless-stopped
-    environment:
-      - MUNNEL_DOMAIN=${MUNNEL_DOMAIN:-localhost}
-    volumes:
-      - ./approve.py:/app/approve.py:ro
-    command: ["python", "/app/approve.py"]
 
   caddy:
     image: caddy:2
@@ -81,7 +75,6 @@ services:
       - MUNNEL_DOMAIN=${MUNNEL_DOMAIN:-localhost}
     depends_on:
       - munnel-server
-      - ask
 
 volumes:
   caddy_data:

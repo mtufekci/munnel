@@ -61,14 +61,13 @@ munnel 3000 -s myapp -t <TOKEN> --server tunnels.example.com:7001
 Internet ──:443──► Caddy (TLS, on-demand certs) ──► :8080 munnel-server (HTTP ingress)
             :7001 ► munnel-server (control/mux, plaintext, clients connect here)
             :7002 ► munnel-server (control/mux over TLS; off until a certificate is configured)
-                          │ ask http://ask:8080/check  (Caddy calls this before issuing a cert)
-                          ▼
-                     approve.py (token-gated TLS approval)
+            Caddy ── ask http://munnel-server:8081/check ──► munnel-server
+                     (before issuing a cert; internal, never published)
 ```
 
 - **Caddy** terminates TLS and fronts the HTTP ingress on `:8080` (localhost only).
 - **munnel-server** runs the control/mux protocol on `:7001` (and over TLS on `:7002` once enabled) and the HTTP ingress on `:8080`.
-- **approve.py** gates Caddy's on-demand TLS: it only lets a subdomain get a cert if a connected tunnel's token is valid for that subdomain.
+- **The ask listener** (`--ask-addr=:8081`, compose network only) gates Caddy's on-demand TLS: a subdomain gets a cert only while a tunnel holds it, so nobody can make the server request certs for made-up names.
 
 Files of interest on the VM:
 - `/opt/munnel/.env` — `MUNNEL_DOMAIN`, `MUNNEL_TOKENS`, `MUNNEL_SCHEME` (chmod 600, written by cloud-init).

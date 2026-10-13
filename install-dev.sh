@@ -17,7 +17,8 @@
 set -eu
 
 # Public server address (non-secret). Override with MUNNEL_SERVER if needed.
-SERVER="${MUNNEL_SERVER:-tunnels.momentumpay.xyz:7001}"
+# 7002 is the TLS control port: the token never crosses the network in clear.
+SERVER="${MUNNEL_SERVER:-tunnels.momentumpay.xyz:7002}"
 # Auth token is optional — self-serve with `munnel token` if omitted. Pass
 # via --token / MUNNEL_TOKEN for an operator-issued token.
 TOKEN=""
@@ -37,12 +38,13 @@ usage:
   ./install-dev.sh                          # build + install (self-serve token after)
   ./install-dev.sh --token <TOKEN>           # with an operator-issued token
   MUNNEL_TOKEN=<TOKEN> ./install-dev.sh      # same, via env
-  ./install-dev.sh --server tunnels.example.com:7001
+  ./install-dev.sh --server tunnels.example.com:7002
 
 what it does:
   1. builds the munnel client (uses go if installed, else docker)
   2. installs it to /usr/local/bin (or ~/.local/bin if no write access)
-  3. writes ~/.munnel/config with the server address (and token if given)
+  3. writes ~/.munnel/config with the server address (and token if given);
+     TLS is on unless --server names the plaintext port 7001
 
 after that:
   munnel token --sub myapp    # one-time: acquire your token (self-service)
@@ -56,6 +58,12 @@ done
 # fall back to env if --token wasn't given
 [ -z "$TOKEN" ] && TOKEN="${MUNNEL_TOKEN:-}"
 # TOKEN is optional: if absent, the dev self-serves with `munnel token`.
+
+# TLS for any port but the plaintext 7001 (TLS against it would never connect).
+case "$SERVER" in
+  *:7001) TLS=false ;;
+  *) TLS=true ;;
+esac
 
 fail() { echo "install-dev.sh: $*" >&2; exit 1; }
 
@@ -95,6 +103,7 @@ if [ -n "$TOKEN" ]; then
 # munnel client defaults — written by install-dev.sh $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
 # edit or re-run install-dev.sh to change. precedence: flag > env > this file.
 server=$SERVER
+tls=$TLS
 token=$TOKEN
 EOF
 else
@@ -102,6 +111,7 @@ else
 # munnel client defaults — written by install-dev.sh $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
 # edit or re-run install-dev.sh to change. precedence: flag > env > this file.
 server=$SERVER
+tls=$TLS
 # no token yet — self-serve one: munnel token --sub <name>
 EOF
 fi

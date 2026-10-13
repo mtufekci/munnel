@@ -42,6 +42,7 @@ func run() int {
 	tlsCertFile := fs.String("tls-cert-file", "", "PEM certificate for the TLS control port (e.g. Caddy's certificate for --domain); reloaded when it changes")
 	tlsKeyFile := fs.String("tls-key-file", "", "PEM private key for --tls-cert-file")
 	proxyAddr := fs.String("proxy-addr", ":8080", "listen address for public HTTP ingress")
+	askAddr := fs.String("ask-addr", "", "listen address for Caddy's on-demand TLS check (GET /check?domain=); approves only the apex and live tunnels; keep it internal")
 	authTokens := fs.String("auth-tokens", "", "comma-separated list of valid static client tokens")
 	authFile := fs.String("auth-file", "", "JSON file mapping tokens to reserved subdomains")
 	signingKeyFile := fs.String("signing-key-file", "", "file containing the HMAC key for signed, scoped tokens (or $MUNNEL_SIGNING_KEY)")
@@ -143,6 +144,7 @@ flags:
 		ControlTLSAddr: *controlTLSAddr,
 		ControlTLS:     controlTLS,
 		ProxyAddr:      *proxyAddr,
+		AskAddr:        *askAddr,
 		PublicPort:     *publicPort,
 		PublicScheme:   *scheme,
 		MaxRequestBody: int64(*maxBodyMB) << 20,
