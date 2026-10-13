@@ -102,9 +102,15 @@ It is also the token devs pass with `-t`. To rotate it:
 ssh munnel-dev
 TOKEN=$(openssl rand -hex 24)
 sed -i "s/^MUNNEL_TOKENS=.*/MUNNEL_TOKENS=$TOKEN/" /opt/munnel/.env
-docker compose -f /opt/munnel/docker-compose.yml restart munnel-server
+docker compose -f /opt/munnel/docker-compose.yml up -d munnel-server
 # distribute $TOKEN to devs; the old one stops working immediately
 ```
+
+> Use `up -d`, not `restart`, after any `.env` change. `.env` values reach the
+> server through `${…}` in the compose `command:`, which compose fills in when
+> it creates the container; `restart` reuses the old container and its old
+> flags, so the old token would keep working. `up -d` recreates the container
+> only when its config changed.
 
 ### Per-dev tokens with reserved subdomains (recommended as the team grows)
 
@@ -163,13 +169,17 @@ form → after login, a session cookie authorizes access and the dev's app sees
 `X-Authenticated-User: <whoever they entered>`. The header is always stripped
 from incoming requests first, so viewers can't spoof it.
 
-The dev server currently uses the **stub** provider (`MUNNEL_AUTH_STUB=true` in
-`.env`), which trusts any submitted username — **dev/test only**. It is gated
-to `--protect` tunnels only; regular tunnels are unaffected. A real OIDC
-provider is the production path (implement `forwardauth.Provider`); until then,
-do not rely on stub auth for anything sensitive. The session-cookie HMAC key is
-`MUNNEL_SESSION_KEY` in `.env` (ephemeral if unset, so sessions don't survive a
-restart — set it for stable sessions).
+The dev server has **no auth provider** (`MUNNEL_AUTH_STUB=false` in `.env`
+since 2026-10-13), so `--protect` tunnels, and signed tokens minted with
+`--protect`, are refused at connect: `tunnel protection requested but server
+has no auth provider configured`. Regular tunnels are unaffected and public by
+design. Setting `MUNNEL_AUTH_STUB=true` (then `docker compose up -d
+munnel-server`) turns on the **stub** provider, which trusts any submitted
+username, so a "protected" tunnel is open to anyone who types a name:
+**dev/test only**. A real OIDC provider is the production path (implement
+`forwardauth.Provider`). The session-cookie HMAC key is `MUNNEL_SESSION_KEY` in
+`.env` (unused while no provider is on; ephemeral if unset, so sessions don't
+survive a restart).
 
 ---
 
@@ -351,7 +361,7 @@ docker compose logs -f munnel-server    # server log (tunnel up/down, handshakes
 docker compose logs -f caddy            # TLS issuance / proxy
 # on-demand permission check: 200 = live tunnel (cert allowed), 403 = refused
 docker exec munnel-caddy-1 wget -qSO /dev/null "http://munnel-server:8081/check?domain=<sub>.tunnels.momentumpay.xyz"
-docker compose restart munnel-server    # reload server (picks up new .env)
+docker compose up -d munnel-server      # apply .env changes (restart would keep the old values)
 docker compose down                     # stop everything
 docker compose up -d                    # start everything
 docker compose up -d --build            # rebuild after a code change
