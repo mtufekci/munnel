@@ -395,6 +395,7 @@ expires.
 | `--tls-cert-file` | `""` | PEM certificate for the TLS control port; re-read when it changes |
 | `--tls-key-file` | `""` | PEM private key for `--tls-cert-file` |
 | `--proxy-addr` | `:8080` | public HTTP ingress address |
+| `--ask-addr` | `""` | caddy on-demand TLS check (`GET /check?domain=`): approves the apex and live tunnels only; keep it internal |
 | `--auth-tokens` | `""` | comma-separated valid client tokens |
 | `--auth-file` | `""` | JSON file mapping tokens → reserved subdomains |
 | `--signing-key-file` | `""` | file with the HMAC key for signed, scoped tokens (or `$MUNNEL_SIGNING_KEY`) |
@@ -459,13 +460,15 @@ app, so it is locked down:
    ```
 
 3. **TLS** — the server speaks plain HTTP; terminate TLS in front. the
-   included `docker-compose.yml` runs Caddy alongside the server and a tiny
-   `ask` permission endpoint. Caddy obtains the apex certificate on startup
-   and a per-subdomain Let's Encrypt certificate on each `*.tunnels.example.com`
-   subdomain's first request (on-demand TLS). the `ask` service (see
-   `approve.py`) gates issuance to your own domain only — Caddy v2.8+
-   requires a permission module for on-demand TLS. no DNS-provider plugin
-   or wildcard certificate is needed. with the stack running, clients use:
+   included `docker-compose.yml` runs Caddy alongside the server. Caddy
+   obtains the apex certificate on startup and a per-subdomain Let's Encrypt
+   certificate on each `*.tunnels.example.com` subdomain's first request
+   (on-demand TLS). before each issuance Caddy asks the server's internal
+   `--ask-addr` listener, which approves only the apex and subdomains with a
+   live tunnel, so nobody can make it request certificates for made-up names
+   (Caddy v2.8+ requires such a check for on-demand TLS). no DNS-provider
+   plugin or wildcard certificate is needed. with the stack running, clients
+   use:
 
    ```bash
    munnel 3000 -s myapp -t secret123 --server tunnels.example.com:7001
@@ -491,7 +494,7 @@ a production-grade managed instance for devs is documented in
 (`rg-munnel-dev-westeurope`), a Ubuntu VM running the server behind Caddy with
 on-demand TLS, Log Analytics + alerts, and an operator runbook (SSH access,
 token rotation, redeploy, troubleshooting). the `docker-compose.yml` and
-`approve.py` in this repo are the shape that deployment runs.
+`Caddyfile.example` in this repo are the shape that deployment runs.
 
 redeploys can be triggered manually from the **Actions** tab via the `Deploy
 server` workflow (`.github/workflows/deploy-server.yml`) — a self-hosted
@@ -619,6 +622,7 @@ munnel/
 │   ├── server/
 │   │   ├── auth.go             # token auth (static + signed) + reserved subdomains + reserved names
 │   │   ├── control.go          # control listener, handshake, registration
+│   │   ├── ask.go              # caddy on-demand TLS check: apex + live tunnels only
 │   │   ├── registry.go         # thread-safe subdomain → tunnel registry (same-token takeover)
 │   │   ├── certfile.go         # TLS control-port certificate, reloaded when the files change
 │   │   ├── proxy.go            # public HTTP ingress + request/WebSocket relay + forward-auth
@@ -651,6 +655,7 @@ munnel/
 │   ├── liveness_test.go        # dead peer, same-token takeover, 504, viewer disconnect closes local SSE
 │   ├── handshake_test.go       # handshake line framing at 64/128/256…-byte hellos
 │   ├── inspector_test.go       # inspector Host/Origin allowlist + per-launch token
+│   ├── ask_test.go             # on-demand TLS check: apex + live tunnels only
 │   └── forwardauth_test.go     # protected tunnels: redirect, login, header injection, spoof stripping
 ├── deploy/                     # cross-provider provisioning scripts
 │   ├── README.md               # deploy guide (why scp, provider prerequisites)
@@ -671,8 +676,7 @@ munnel/
 │       ├── munnel-request-lifecycle.* # frame-level request lifecycle
 │       └── munnel-websocket-upgrade.* # WS upgrade hijack + raw pipe
 ├── Dockerfile                  # multi-stage server image (scratch)
-├── docker-compose.yml          # production shape: server + caddy + ask (TLS)
-├── approve.py                  # caddy on-demand TLS permission endpoint
+├── docker-compose.yml          # production shape: server + caddy (TLS)
 ├── Caddyfile.example           # on-demand TLS reverse proxy template
 ├── .env.example                # MUNNEL_DOMAIN / MUNNEL_TOKENS / MUNNEL_SCHEME / signing key / auth stub
 ├── Makefile                    # build / test / cross-compile

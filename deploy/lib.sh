@@ -75,7 +75,7 @@ ship_and_start() {
 		rm -f /tmp/munnel-src.tgz
 		cd /opt/munnel
 		sudo cp Caddyfile.example Caddyfile
-		sudo docker compose up -d --build
+		sudo docker compose up -d --build --remove-orphans
 		sudo systemctl enable munnel.service
 		echo "✓ stack live"
 		sudo docker compose ps

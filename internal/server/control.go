@@ -38,6 +38,11 @@ type Config struct {
 	ControlAddr string // control + multiplex listener, e.g. ":7001"
 	ProxyAddr   string // public HTTP ingress, e.g. ":8080"
 
+	// AskAddr serves Caddy's on-demand TLS permission check (GET
+	// /check?domain=), approving only the apex and live tunnels, e.g.
+	// ":8081". "" = off. Keep it off the public internet.
+	AskAddr string
+
 	// ControlTLSAddr is the TLS control listener, e.g. ":7002". It runs only
 	// when ControlTLS is set too; the plaintext ControlAddr keeps working.
 	// Reserved names can be claimed only through this listener.
@@ -70,6 +75,7 @@ type Server struct {
 	controlLn    net.Listener
 	controlTLSLn net.Listener // nil when the TLS control listener is off
 	proxyLn      net.Listener
+	askLn        net.Listener // nil when AskAddr is ""
 }
 
 // New validates config and builds a Server.
@@ -119,6 +125,9 @@ func (s *Server) ProxyListener() net.Listener { return s.proxyLn }
 // is not configured.
 func (s *Server) ControlTLSListener() net.Listener { return s.controlTLSLn }
 
+// AskListener exposes the bound ask listener, or nil when AskAddr is "".
+func (s *Server) AskListener() net.Listener { return s.askLn }
+
 func (s *Server) tlsEnabled() bool { return s.cfg.ControlTLS != nil && s.cfg.ControlTLSAddr != "" }
 
 // Bind creates the listeners (synchronously — safe to inspect afterwards,
@@ -145,15 +154,27 @@ func (s *Server) Bind() error {
 		}
 		s.controlTLSLn = tls.NewListener(ln, tc)
 	}
-	s.proxyLn, err = net.Listen("tcp", s.cfg.ProxyAddr)
-	if err != nil {
+	closeControl := func() {
 		s.controlLn.Close()
 		s.controlLn = nil
 		if s.controlTLSLn != nil {
 			s.controlTLSLn.Close()
 			s.controlTLSLn = nil
 		}
+	}
+	s.proxyLn, err = net.Listen("tcp", s.cfg.ProxyAddr)
+	if err != nil {
+		closeControl()
 		return fmt.Errorf("proxy listen %s: %w", s.cfg.ProxyAddr, err)
+	}
+	if s.cfg.AskAddr != "" {
+		s.askLn, err = net.Listen("tcp", s.cfg.AskAddr)
+		if err != nil {
+			closeControl()
+			s.proxyLn.Close()
+			s.proxyLn = nil
+			return fmt.Errorf("ask listen %s: %w", s.cfg.AskAddr, err)
+		}
 	}
 	return nil
 }
@@ -167,6 +188,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	listeners := []net.Listener{s.controlLn, s.proxyLn}
 	if s.controlTLSLn != nil {
 		listeners = append(listeners, s.controlTLSLn)
+	}
+	if s.askLn != nil {
+		listeners = append(listeners, s.askLn)
 	}
 	errCh := make(chan error, len(listeners))
 
@@ -186,14 +210,21 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if names := s.cfg.Auth.ReservedNames(); len(names) > 0 {
 		mode += " reserved=" + strings.Join(names, ",")
 	}
+	proxy := s.proxyLn.Addr().String()
+	if s.askLn != nil {
+		proxy += " ask=" + s.askLn.Addr().String()
+	}
 	s.log.Printf("munnel-server up — domain=%s control=%s proxy=%s auth=%s",
-		s.cfg.Domain, control, s.proxyLn.Addr(), mode)
+		s.cfg.Domain, control, proxy, mode)
 
 	go s.acceptLoop(s.controlLn, false, errCh)
 	if s.controlTLSLn != nil {
 		go s.acceptLoop(s.controlTLSLn, true, errCh)
 	}
 	go func() { errCh <- s.serveProxyHTTP() }()
+	if s.askLn != nil {
+		go func() { errCh <- s.serveAsk() }()
+	}
 
 	closeAll := func() {
 		for _, ln := range listeners {

@@ -16,16 +16,17 @@ A self-hosted ngrok replacement. Devs run `munnel <port> -s <sub>` and get a
 public `https://<sub>.tunnels.momentumpay.xyz` URL that tunnels to their
 localhost. The server address and auth token live in `~/.munnel/config`
 (written by `install-dev.sh`), so day-to-day usage is a single short command.
-One VM runs the tunnel server; Caddy terminates TLS; a tiny Python `ask`
-endpoint gates on-demand cert issuance to our domain only.
+One VM runs the tunnel server; Caddy terminates TLS; before issuing an
+on-demand cert Caddy asks munnel-server (internal `:8081`), which approves only
+the apex and subdomains with a live tunnel.
 
 ```
 dev machine                         Azure (rg-munnel-dev-westeurope)
-┌────────────┐   TCP/7001 (mux)    ┌─────────────────────────────────┐
+┌────────────┐   TLS/7002 (mux)    ┌─────────────────────────────────┐
 │ munnel     │ ──────────────────► │ vm-munnel-dev                   │
-│ client     │                     │  ├─ munnel-server  :7001/:8080  │
-│ (forwards  │                     │  ├─ caddy          :80/:443     │
-│  :3000)    │                     │  └─ ask            :8080 (perm) │
+│ client     │                     │  ├─ munnel-server  :7002/:8080  │
+│ (forwards  │                     │  │    + :8081 ask (internal)    │
+│  :3000)    │                     │  └─ caddy          :80/:443     │
 └────────────┘                     └────────────┬────────────────────┘
         ▲                                        │ HTTPS 443
         │ relayed HTTP/1.1 over mux stream       ▼
@@ -44,7 +45,7 @@ dev machine                         Azure (rg-munnel-dev-westeurope)
 |----------|------|-------|
 | VM | `vm-munnel-dev` | Standard_D2als_v7 (2 vCPU / 4 GB), Ubuntu 24.04, OS disk 30 GB |
 | Public IP | `pip-munnel-dev` | `51.105.170.135`, FQDN `munnel-dev.westeurope.cloudapp.azure.com` |
-| NSG | `nsg-munnel-dev` | 22 (deployer IP only), 80/443/7001 (any) |
+| NSG | `nsg-munnel-dev` | 22 (deployer IP only), 80/443/7002 (any). 7001 (plaintext control) closed 2026-10-13; `deploy/azure/main.bicep` still opens it, so delete `AllowMunnelControl` again after any re-provision |
 | Log Analytics | `log-munnel-dev-westeurope` | syslog + perf counters |
 | Data collection rule | `dcr-munnel-dev-westeurope` | associated to the VM |
 | Action group | `ag-munnel-dev-westeurope` | emails `murat@momentumpay.xyz` |
@@ -204,8 +205,9 @@ Any flag still overrides the config — e.g. `munnel 3000 -s other
 --inspect=false`. Env vars (`MUNNEL_SERVER`, `MUNNEL_TOKEN`, …) override the
 config file too; see `munnel --help`.
 
-> The client must use `tunnels.momentumpay.xyz:7001` for the control
-> connection. The public URL is always `https://<sub>.tunnels.momentumpay.xyz`
+> The client must use `tunnels.momentumpay.xyz:7002` with `tls=true` (what
+> `install-dev.sh` writes) for the control connection. The plaintext port 7001
+> is closed in the NSG: it sent the token in the clear. The public URL is always `https://<sub>.tunnels.momentumpay.xyz`
 > (port 443, no port suffix).
 
 ### Rotating the token for all devs
@@ -229,7 +231,7 @@ tar -czf /tmp/munnel-src.tgz --exclude=bin --exclude=dist --exclude=.git \
 scp /tmp/munnel-src.tgz munnel-dev:/tmp/munnel-src.tgz
 ssh munnel-dev 'set -e; cd /opt/munnel && tar xzf /tmp/munnel-src.tgz -C /opt/munnel \
   && rm -f /tmp/munnel-src.tgz && cp Caddyfile.example Caddyfile \
-  && docker compose up -d --build && docker compose ps'
+  && docker compose up -d --build --remove-orphans && docker compose ps'
 ```
 
 The tar **excludes `.env`** so the live token + signing/session keys are never
@@ -252,8 +254,14 @@ scp internal/server/control.go munnel-dev:/opt/munnel/internal/server/control.go
 ssh munnel-dev 'cd /opt/munnel && docker compose up -d --build'
 ```
 
-The image build takes ~2 min (Go build inside `golang:1.25-alpine`). Caddy and
-the ask container are pulled images, no rebuild.
+The image build takes ~2 min (Go build inside `golang:1.25-alpine`). Caddy is
+a pulled image, no rebuild.
+
+> **Caddyfile is bind-mounted as a single file.** `cp` rewrites it in place,
+> which the running Caddy sees. Deleting and recreating it (e.g. `rsync
+> --delete`) gives it a new inode, and Caddy keeps reading the old one even
+> after `caddy reload`. If in doubt: `docker compose up -d --force-recreate
+> caddy` (certs live in the `caddy_data` volume and survive).
 
 ### Deploy via GitHub Actions (manual)
 
@@ -322,7 +330,9 @@ tunnels.momentumpay.xyz     A   51.105.170.135
 Caddy auto-obtains:
 - the apex cert on startup (normal ACME), and
 - a per-subdomain cert on each `*.tunnels.momentumpay.xyz` first request
-  (on-demand TLS, gated by the `ask` service to our domain only).
+  (on-demand TLS). Caddy first asks munnel-server's internal `:8081` ask
+  listener, which approves only names with a live tunnel, so nobody can make
+  the server request certs for made-up names.
 
 Certs are stored in the `caddy_data` docker volume and auto-renewed. If the
 public IP ever changes (it shouldn't — it's static), update the A records and
@@ -339,7 +349,8 @@ cd /opt/munnel
 docker compose ps                       # stack status
 docker compose logs -f munnel-server    # server log (tunnel up/down, handshakes)
 docker compose logs -f caddy            # TLS issuance / proxy
-docker compose logs --tail=50 ask       # on-demand permission checks
+# on-demand permission check: 200 = live tunnel (cert allowed), 403 = refused
+docker exec munnel-caddy-1 wget -qSO /dev/null "http://munnel-server:8081/check?domain=<sub>.tunnels.momentumpay.xyz"
 docker compose restart munnel-server    # reload server (picks up new .env)
 docker compose down                     # stop everything
 docker compose up -d                    # start everything
@@ -397,8 +408,9 @@ history). The source of truth is this repo.
 
 | Symptom | Check |
 |--------|-------|
-| Client can't connect to `:7001` | `nc -zv tunnels.momentumpay.xyz 7001` from the dev box. If it fails, NSG rule `AllowMunnelControl` may have been removed. |
-| `curl https://sub.tunnels...` → TLS error / no cert | First request triggers issuance (can take ~10-30s). Retry. Check `docker compose logs caddy` for `certificate obtained` or ask-endpoint 403s. |
+| Client can't connect to `:7002` | `nc -zv tunnels.momentumpay.xyz 7002` from the dev box. If it fails, NSG rule `AllowMunnelTLS` may have been removed. A TLS/certificate error: `openssl s_client -connect tunnels.momentumpay.xyz:7002 </dev/null` and check `MUNNEL_TLS_*` in `.env`. |
+| Client times out on `:7001` | 7001 (plaintext) is closed. Set `server=tunnels.momentumpay.xyz:7002` and `tls=true` in `~/.munnel/config`, or re-run `install-dev.sh`. |
+| `curl https://sub.tunnels...` → TLS error / no cert | Certs are issued only while a tunnel holds the name: no live tunnel → TLS error, by design. With a tunnel up, the first request triggers issuance (can take ~10-30s); retry. Check `docker compose logs caddy` for `certificate obtained` or ask refusals, and the `wget` ask check in §8. |
 | `curl https://sub.tunnels...` → 502/504 | No tunnel registered for that subdomain, or the dev's local server is down. `docker compose logs munnel-server` shows `tunnel up/down`. |
 | Caddy restart-looping | Usually a Caddyfile parse error. `docker compose logs caddy` prints the line. `on_demand_tls` must have an `ask` URL (mandatory in Caddy v2.8+). |
 | munnel-server restart-looping (`--public-scheme must be http or https`) | A `.env` var got concatenated onto the previous line (missing trailing newline — see §6 caveat). `docker compose config \| grep public-scheme` shows the mangled value. Fix the `.env` and `docker compose up -d`. |

@@ -15,7 +15,7 @@ control frames over a single TCP socket. Caddy fronts the server with TLS.
 ```
 browser → Caddy :443 (TLS) → munnel-server :8080 (ingress) ─ mux ─ :7001 (or TLS :7002) → client → localhost:3000
                                                                     │
-                              Caddy on-demand TLS ← ask http://ask:8080/check ← approve.py (token gate)
+                              Caddy on-demand TLS ← ask http://munnel-server:8081/check (live tunnels only)
 ```
 
 ## Build, test, run
@@ -64,6 +64,7 @@ internal/
     tunnel.go     # Tunnel: connect/Run/Events; ctx-watcher shutdown; mutex-guarded emit
   server/
     control.go    # server-side mux: sessions, subdomain routing, frame dispatch
+    ask.go        # Caddy on-demand TLS check (--ask-addr): apex + live tunnels only
     ingress.go    # HTTP ingress listener (behind Caddy on 443)
   mux/
     *.go          # 9-byte-binary multiplexer protocol (frame codec, streams)
@@ -82,6 +83,7 @@ integration/
   liveness_test.go # dead peer, same-token takeover, 504 header timeout, viewer disconnect closes local SSE
   handshake_test.go # hello/ack line framing at 64/128/256…-byte boundaries
   inspector_test.go # inspector Host/Origin allowlist + token
+  ask_test.go      # on-demand TLS check: apex + live tunnels only, refused after disconnect
 docs/
   OPERATIONS.md   # operator runbook: deploy, SSH, logs, token rotation, hardening, teardown
 deploy/
@@ -95,10 +97,9 @@ deploy/
   gcp/            # deploy.sh (gcloud)
 .github/
   workflows/deploy-server.yml  # manual workflow_dispatch: test on ubuntu-latest, deploy via self-hosted runner on the VM
-Caddyfile.example # on-demand TLS with ask http://ask:8080/check
-docker-compose.yml# munnel-server + Caddy + approve (built from source, no registry)
+Caddyfile.example # on-demand TLS with ask http://munnel-server:8081/check
+docker-compose.yml# munnel-server + Caddy (built from source, no registry)
 Dockerfile        # golang:1.25 → server binary
-approve.py        # Caddy ask endpoint: gates on-demand TLS by token+subdomain
 install.sh        # end-user: build+install client/server from source
 install-dev.sh    # dev: build client, write ~/.munnel/config (token via --token)
 ```
@@ -118,9 +119,17 @@ install-dev.sh    # dev: build client, write ~/.munnel/config (token via --token
 - **Precedence**: flag > env (`MUNNEL_*`) > config file (`~/.munnel/config`) >
   builtin. `applyDefaults` runs *before* flag parsing so explicit flags still win.
   See `cmd/client/defaults.go` + `defaults_test.go`.
-- **On-demand TLS gate**: Caddy calls `ask http://ask:8080/check` before issuing
-  any subdomain cert. `approve.py` approves only subdomains with a connected,
-  token-valid tunnel. Without this, anyone could mint certs for your domain.
+- **On-demand TLS gate**: Caddy calls `ask http://munnel-server:8081/check`
+  (`--ask-addr`, `internal/server/ask.go`) before issuing any subdomain cert.
+  It approves only the apex (+ `www.`) and subdomains held by a connected
+  tunnel, so a cert needs a valid token behind it. Approving every name under
+  the domain let anyone trigger issuance for made-up names and burn the ACME
+  rate limit of the whole registered domain. `:8081` must never be published
+  (it reveals which tunnels are live). The compose file bind-mounts
+  `Caddyfile` as a single file, so it must be rewritten in place (`cp`), never
+  deleted and recreated, or the running Caddy keeps the old config.
+  Regression test: `integration/ask_test.go` (verified to fail with a
+  suffix-only rule).
 - **Two token kinds, one Authenticator**: static tokens (CSV/JSON, server holds
   the list) and signed tokens (HMAC-SHA256, package `token`, self-describing
   subdomain + expiry). A token starting with `m1.` is signed; anything else is

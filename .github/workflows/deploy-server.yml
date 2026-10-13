@@ -69,27 +69,39 @@ jobs:
           # key) survive. /opt/munnel is owned by a foreign UID from the
           # initial tar deploy, so sudo is required.
           sudo rsync -a --delete \
-            --exclude=.env \
+            --exclude=.env --exclude=Caddyfile \
             --exclude=bin --exclude=dist --exclude=.git \
             --exclude=node_modules --exclude='*.tgz' \
             ./ /opt/munnel/
           # Regenerate Caddyfile from the template ({$MUNNEL_DOMAIN} env
-          # substitution is read from .env at container start).
+          # substitution is read from .env at container start). cp writes
+          # into the existing file, keeping the inode the caddy container's
+          # single-file bind mount points at; deleting and recreating it
+          # (as rsync --delete would) leaves caddy reading the old content.
           sudo cp /opt/munnel/Caddyfile.example /opt/munnel/Caddyfile
           echo "✓ source synced to /opt/munnel"
 
       - name: Build and restart stack
         working-directory: /opt/munnel
         run: |
-          sudo docker compose up -d --build
+          # --remove-orphans drops services deleted from the compose file.
+          sudo docker compose up -d --build --remove-orphans
           echo "=== compose ps ==="
           sudo docker compose ps
 
       - name: Reload Caddy
         if: inputs.caddy_reload
         run: |
-          sudo docker exec munnel-caddy-1 caddy reload --config /etc/caddy/Caddyfile 2>&1 \
-            || sudo docker compose -f /opt/munnel/docker-compose.yml restart caddy
+          # A container still bound to a replaced Caddyfile would reload the
+          # old config and pass; recreate it instead (certs live in the
+          # caddy_data volume, so nothing is re-issued).
+          if sudo docker exec munnel-caddy-1 cat /etc/caddy/Caddyfile | sudo cmp -s - /opt/munnel/Caddyfile; then
+            sudo docker exec munnel-caddy-1 caddy reload --config /etc/caddy/Caddyfile 2>&1 \
+              || sudo docker compose -f /opt/munnel/docker-compose.yml restart caddy
+          else
+            echo "caddy sees a stale Caddyfile; recreating the container"
+            sudo docker compose -f /opt/munnel/docker-compose.yml up -d --force-recreate caddy
+          fi
 
       - name: Health check
         run: |
@@ -100,13 +112,23 @@ jobs:
             if curl -sf http://localhost:8080/healthz; then
               echo
               echo "✓ server healthy"
-              exit 0
+              break
+            fi
+            if [ "$i" = 12 ]; then
+              echo "::error::health check failed — server did not respond on :8080/healthz"
+              exit 1
             fi
             echo "  …waiting (attempt $i/12)"
             sleep 5
           done
-          echo "::error::health check failed — server did not respond on :8080/healthz"
-          exit 1
+          # Caddy must reach munnel-server's ask listener, or no new
+          # subdomain gets a certificate. The apex is always approved.
+          domain=$(sudo docker exec munnel-caddy-1 printenv MUNNEL_DOMAIN)
+          if ! sudo docker exec munnel-caddy-1 wget -q -O /dev/null "http://munnel-server:8081/check?domain=$domain"; then
+            echo "::error::caddy cannot reach the ask endpoint at munnel-server:8081"
+            exit 1
+          fi
+          echo "✓ ask endpoint reachable from caddy"
 
       - name: Dump server logs on failure
         if: failure()
