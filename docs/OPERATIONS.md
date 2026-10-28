@@ -46,8 +46,8 @@ dev machine                         AWS nonprod (eu-central-1, own VPC)
 
 | Piece | Detail |
 |-------|--------|
-| Account / region | Momentous Pay's AWS **nonprod** account, `eu-central-1` (Frankfurt), one AZ |
-| Network | Its own small VPC (one public subnet, internet gateway, no NAT), not the Momentous nonprod VPC. Open to the internet: 80, 443, 7002. 7001 (plaintext control) is closed. **No port 22.** |
+| Account / region | the AWS **nonprod** account (landing-zone root `munnel-nonprod`), `eu-central-1` (Frankfurt), one AZ |
+| Network | Its own small VPC (one public subnet, internet gateway, no NAT), not a shared VPC. Open to the internet: 80, 443, 7002. 7001 (plaintext control) is closed. **No port 22.** |
 | Host | EC2 `t4g.small` (2 vCPU Graviton, 2 GiB), Ubuntu 24.04 arm64, gp3 20 GiB encrypted. IMDSv2 only, no key pair |
 | Address | One Elastic IP, kept across host replacements; DNS points at it (§7) |
 | Secret | Secrets Manager `munnel/nonprod/server-env`: munnel's `.env`, byte for byte (§4) |
@@ -74,11 +74,11 @@ git checkout deploys fetch into) and `MUNNEL_DIR` (`/opt/munnel`).
 ## 3. Access (SSM Session Manager, no SSH)
 
 The host has no SSH daemon exposed and no key pair. Open a shell with SSM, with
-the AWS CLI, the Session Manager plugin and the `momentous-nonprod` SSO profile:
+the AWS CLI, the Session Manager plugin and your SSO profile for that account:
 
 ```bash
-aws sso login --profile momentous-nonprod
-aws ssm start-session --target <instance-id> --profile momentous-nonprod --region eu-central-1
+aws sso login --profile <nonprod-profile>
+aws ssm start-session --target <instance-id> --profile <nonprod-profile> --region eu-central-1
 sudo -i          # the session user is not root; the stack is root's
 ```
 
@@ -104,7 +104,7 @@ The secret's SecretString is the whole `.env`. Fetch it to a private file, edit
 it, put it back, then redeploy:
 
 ```bash
-export AWS_PROFILE=momentous-nonprod AWS_REGION=eu-central-1
+export AWS_PROFILE=<nonprod-profile> AWS_REGION=eu-central-1
 f=$(umask 077 && mktemp)
 aws secretsmanager get-secret-value --secret-id munnel/nonprod/server-env \
   --query SecretString --output json | jq -j . > "$f"
@@ -337,7 +337,7 @@ a pulled image, no rebuild.
 
 ## 7. DNS and TLS
 
-DNS is at Namecheap (the `momentumpay.xyz` zone; not `momentouspay.com`). Both A
+DNS is at Namecheap (the `momentumpay.xyz` zone). Both A
 records point at the host's Elastic IP, TTL 300:
 
 ```
@@ -432,18 +432,19 @@ The source of truth is this repo plus the secret.
 | munnel-server restart-looping (`--public-scheme must be http or https`) | A `.env` var got concatenated onto the previous line (missing trailing newline in the secret — see §6 caveat). `docker compose config \| grep public-scheme` shows the mangled value. Fix the secret and redeploy. |
 | 8080 reachable from the internet | It shouldn't be. Compose binds `127.0.0.1:8080:8080` and the security group has no rule for it. If exposed, the repo/host compose drifted — fix the port binding. |
 | Workflow fails at "Assume the deploy role" (`Not authorized to perform sts:AssumeRoleWithWebIdentity`) | The run was not on `main`, or the job gained an `environment:` (changes the OIDC subject), or `MUNNEL_DEPLOY_ROLE_ARN` / `MUNNEL_AWS_REGION` is wrong. |
-| Workflow fails at `send-command` (`AccessDenied`, `InvalidInstanceId`) | `MUNNEL_INSTANCE_ID` points at another instance (the role is limited to one), or the SSM agent on the host is offline: `aws ssm describe-instance-information --profile momentous-nonprod --region eu-central-1`. |
-| Deploy status `TimedOut`, `Failed` or `Undeliverable` | Read the `| ` host output in the job log. `Undeliverable`: the host is unreachable by SSM (stopped, or its role lost SSM permissions). Output is cut at 24,000 characters; the full log is on the host. |
+| Workflow fails at `send-command` (`AccessDenied`, `InvalidInstanceId`) | `MUNNEL_INSTANCE_ID` points at another instance (the role is limited to one), or the SSM agent on the host is offline: `aws ssm describe-instance-information --profile <nonprod-profile> --region eu-central-1`. |
+| Deploy status `TimedOut` or `Failed` | Read the `| ` host output in the job log and the `details:` in the error line. `DeliveryTimedOut` / `Undeliverable`: the host is unreachable by SSM (stopped, or its role lost SSM permissions). `ExecutionTimedOut`: the script ran past 900 s. Output is cut at 24,000 characters; the full log is on the host. |
+| Deploy says the secret does not parse as a compose `.env` | The secret has a malformed line (an unclosed quote, say). Compose's error quotes the line, so it is withheld from the public job log. Fix the secret (§4) and redeploy; to see the error, run `docker compose config --quiet` in `/opt/munnel` in an SSM session. The live `.env` was left alone. |
 | Deploy says the secret has no value | `put-secret-value` was never run for `munnel/nonprod/server-env` (§4). The live `.env` was left alone. |
 | Deploy says the checkout is at a different commit | Something moved `/opt/munnel-src` between the fetch and the script. Re-run the deploy. |
 | Host replaced or capacity error creating it | Change it in the landing-zone root (`t3a.small`, x86, is the no-surprise fallback to the Graviton `t4g.small`). The host must have `/etc/munnel/host.env` and restored certificates (`munnel_caddy_data`) before the first deploy. |
-| Can't open an SSM session | `aws sso login --profile momentous-nonprod`; the Session Manager plugin must be installed; your role needs `ssm:StartSession` on the instance (§3). |
+| Can't open an SSM session | `aws sso login --profile <nonprod-profile>`; the Session Manager plugin must be installed; your role needs `ssm:StartSession` on the instance (§3). |
 
 ---
 
 ## 12. Cost
 
-About USD 20 a month, running 24/7, on Momentous Pay's AWS credits:
+About USD 20 a month, running 24/7, on the account's AWS credits:
 
 | Item | USD / month |
 |------|-------------|

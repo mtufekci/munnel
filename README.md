@@ -665,13 +665,14 @@ munnel/
 │   ├── lib.sh                  # shared deploy helpers (render_user_data, wait_ssh, ship_and_start)
 │   ├── azure/                  # Bicep (main.bicep) + deploy.sh
 │   ├── aws/                    # CloudFormation (cloudformation.yaml) + deploy.sh
+│   ├── aws-ssm/                # host-deploy.sh + tests: the SSM-driven deploy on the AWS host (no SSH)
 │   ├── gcp/                    # deploy.sh (gcloud)
 │   ├── digitalocean/           # deploy.sh (doctl)
 │   └── hetzner/                # deploy.sh (hcloud)
 ├── .github/workflows/
-│   └── deploy-server.yml       # manual workflow_dispatch: test + deploy via self-hosted runner on the Azure VM
+│   └── deploy-server.yml       # manual workflow_dispatch: test + deploy over GitHub OIDC + SSM (GitHub-hosted runner)
 ├── docs/
-│   ├── OPERATIONS.md           # managed Azure deployment + operator runbook
+│   ├── OPERATIONS.md           # managed AWS deployment + operator runbook
 │   ├── images/                 # README screenshots (inspector + terminal TUI)
 │   └── diagrams/               # archify diagrams (HTML viewer + dark/light PNG exports)
 │       ├── munnel-architecture.*      # tunnel topology
