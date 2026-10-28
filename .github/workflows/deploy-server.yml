@@ -1,19 +1,27 @@
-# Deploys the munnel server to the Azure dev VM (tunnels.momentumpay.xyz).
+# Deploys the munnel server to the AWS host (tunnels.momentumpay.xyz).
 #
-# Manually triggered only (Actions tab → "Deploy server" → Run workflow).
-# A self-hosted GitHub Actions runner lives on the VM itself (label
-# `munnel-dev`), so the deploy job runs directly on the VM — no SSH, no SCP,
-# no inbound port changes. It checks out the repo, rsyncs the source to
-# /opt/munnel (preserving the live .env), rebuilds the Docker image, and
-# restarts the stack. The live .env (token, signing key, session key) is
-# never touched — it's excluded from the rsync and already present on the VM.
+# Manually triggered only (Actions tab → "Deploy server" → Run workflow), and
+# only from main. Everything runs on GitHub-hosted runners: the deploy job
+# assumes an AWS role through GitHub's OIDC provider and sends one SSM
+# Run Command to the host. There is no runner on the host, no inbound port
+# (the host has no SSH), and no secret in GitHub: the role is assumed with a
+# short-lived token, and the live .env (tunnel token, signing key, session key)
+# lives in AWS Secrets Manager and is rendered on the host.
 #
-# Test job runs on a GitHub-hosted ubuntu runner (the VM has no Go toolchain);
-# the deploy job only starts after tests pass (or are skipped).
+# The SSM command fetches the commit being deployed from GitHub on the host,
+# then runs deploy/aws-ssm/host-deploy.sh, which rsyncs the source to
+# /opt/munnel (preserving Caddyfile), renders .env, rebuilds the Docker image,
+# restarts the stack, reloads Caddy and checks /healthz and the ask endpoint.
 #
-# One-time setup: install the self-hosted runner on the VM (see
-# docs/OPERATIONS.md §6). No repository secrets are required — the runner
-# authenticates to GitHub outbound and runs jobs locally.
+# Test job runs on a GitHub-hosted ubuntu runner; the deploy job only starts
+# after tests pass (or are skipped).
+#
+# One-time setup: apply the landing-zone root `munnel-nonprod` (host, secret,
+# deploy role), then set three repository variables from its outputs:
+# MUNNEL_DEPLOY_ROLE_ARN, MUNNEL_INSTANCE_ID and MUNNEL_AWS_REGION. See
+# docs/OPERATIONS.md §6. The role trusts this repo's main-branch OIDC subject
+# only, so the deploy job must not use an `environment:` (that changes the
+# subject and the role refuses it).
 
 name: Deploy server
 
@@ -50,87 +58,123 @@ jobs:
       - name: Run tests
         run: go test -race ./...
 
+      - name: Run host deploy script tests
+        run: bash deploy/aws-ssm/host-deploy_test.sh
+
   deploy:
     needs: test
     # Run even if the test job was skipped (run_tests=false), but not if it
-    # failed or was cancelled.
-    if: always() && needs.test.result != 'failure' && needs.test.result != 'cancelled'
-    # The runner is installed on the Azure VM itself (label: munnel-dev).
-    runs-on: [self-hosted, munnel-dev]
-    timeout-minutes: 15
+    # failed or was cancelled. Only from main: the AWS role trusts main only.
+    if: always() && github.ref == 'refs/heads/main' && needs.test.result != 'failure' && needs.test.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Assume the deploy role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.MUNNEL_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.MUNNEL_AWS_REGION }}
+          role-session-name: munnel-deploy-${{ github.run_id }}
 
-      - name: Sync source to /opt/munnel
+      - name: Deploy over SSM
+        # Inputs and variables reach the script through env, never by
+        # interpolation into the script text.
+        env:
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          INSTANCE: ${{ vars.MUNNEL_INSTANCE_ID }}
+          CADDY_RELOAD: ${{ inputs.caddy_reload }}
         run: |
-          # Rsync the checkout into /opt/munnel. --delete keeps the deploy
-          # clean (files removed from the repo are removed on the VM), but
-          # .env is excluded so live secrets (token, signing key, session
-          # key) survive. /opt/munnel is owned by a foreign UID from the
-          # initial tar deploy, so sudo is required.
-          sudo rsync -a --delete \
-            --exclude=.env --exclude=Caddyfile \
-            --exclude=bin --exclude=dist --exclude=.git \
-            --exclude=node_modules --exclude='*.tgz' \
-            ./ /opt/munnel/
-          # Regenerate Caddyfile from the template ({$MUNNEL_DOMAIN} env
-          # substitution is read from .env at container start). cp writes
-          # into the existing file, keeping the inode the caddy container's
-          # single-file bind mount points at; deleting and recreating it
-          # (as rsync --delete would) leaves caddy reading the old content.
-          sudo cp /opt/munnel/Caddyfile.example /opt/munnel/Caddyfile
-          echo "✓ source synced to /opt/munnel"
-
-      - name: Build and restart stack
-        working-directory: /opt/munnel
-        run: |
-          # --remove-orphans drops services deleted from the compose file.
-          sudo docker compose up -d --build --remove-orphans
-          echo "=== compose ps ==="
-          sudo docker compose ps
-
-      - name: Reload Caddy
-        if: inputs.caddy_reload
-        run: |
-          # A container still bound to a replaced Caddyfile would reload the
-          # old config and pass; recreate it instead (certs live in the
-          # caddy_data volume, so nothing is re-issued).
-          if sudo docker exec munnel-caddy-1 cat /etc/caddy/Caddyfile | sudo cmp -s - /opt/munnel/Caddyfile; then
-            sudo docker exec munnel-caddy-1 caddy reload --config /etc/caddy/Caddyfile 2>&1 \
-              || sudo docker compose -f /opt/munnel/docker-compose.yml restart caddy
-          else
-            echo "caddy sees a stale Caddyfile; recreating the container"
-            sudo docker compose -f /opt/munnel/docker-compose.yml up -d --force-recreate caddy
-          fi
-
-      - name: Health check
-        run: |
-          # The server takes a few seconds to bind after recreate. Poll from
-          # the VM itself (the ingress is bound to 127.0.0.1:8080, not the
-          # public IP).
-          for i in $(seq 1 12); do
-            if curl -sf http://localhost:8080/healthz; then
-              echo
-              echo "✓ server healthy"
-              break
-            fi
-            if [ "$i" = 12 ]; then
-              echo "::error::health check failed — server did not respond on :8080/healthz"
-              exit 1
-            fi
-            echo "  …waiting (attempt $i/12)"
-            sleep 5
-          done
-          # Caddy must reach munnel-server's ask listener, or no new
-          # subdomain gets a certificate. The apex is always approved.
-          domain=$(sudo docker exec munnel-caddy-1 printenv MUNNEL_DOMAIN)
-          if ! sudo docker exec munnel-caddy-1 wget -q -O /dev/null "http://munnel-server:8081/check?domain=$domain"; then
-            echo "::error::caddy cannot reach the ask endpoint at munnel-server:8081"
+          set -euo pipefail
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::unexpected commit id"
             exit 1
           fi
-          echo "✓ ask endpoint reachable from caddy"
+          if ! [[ "$INSTANCE" =~ ^i-[0-9a-f]+$ ]]; then
+            echo "::error::repository variable MUNNEL_INSTANCE_ID is not set to an instance id"
+            exit 1
+          fi
+          flags=""
+          if [ "$CADDY_RELOAD" != "true" ]; then
+            flags="--no-caddy-reload"
+          fi
 
-      - name: Dump server logs on failure
-        if: failure()
-        run: |
-          sudo docker compose -f /opt/munnel/docker-compose.yml logs --tail=40 munnel-server 2>&1 || true
+          # What runs on the host, as root. The commit id and flags are the
+          # first two lines (set by jq); the rest is fixed text. `set -eu` here
+          # because the SSM shell may be dash; host-deploy.sh is bash and sets
+          # pipefail itself.
+          script=$(cat <<'REMOTE'
+          set -eu
+          export HOME="${HOME:-/root}"
+          . /etc/munnel/host.env
+          [ -d "$MUNNEL_SRC/.git" ] || git clone --no-checkout "$MUNNEL_REPO_URL" "$MUNNEL_SRC"
+          git -C "$MUNNEL_SRC" fetch --depth 1 origin "$sha"
+          git -C "$MUNNEL_SRC" checkout --detach --force "$sha"
+          bash "$MUNNEL_SRC/deploy/aws-ssm/host-deploy.sh" "$sha" $flags
+          REMOTE
+          )
+          params=$(jq -n --arg script "$script" --arg sha "$SHA" --arg flags "$flags" '{
+            commands: (["sha=" + $sha, "flags=" + $flags]
+                       + ($script | split("\n") | map(select(length > 0)))),
+            executionTimeout: ["900"]
+          }')
+
+          cmd_id=$(aws ssm send-command \
+            --document-name AWS-RunShellScript \
+            --instance-ids "$INSTANCE" \
+            --comment "munnel deploy ${SHA:0:7} run $RUN_ID" \
+            --timeout-seconds 900 \
+            --parameters "$params" \
+            --query Command.CommandId --output text)
+          echo "SSM command $cmd_id sent to the host"
+
+          # Poll every 10 s, up to 18 min, until the command reaches a final
+          # status. The invocation can be missing for the first few seconds.
+          inv='{}'
+          status=""
+          finished=false
+          for _ in $(seq 1 108); do
+            sleep 10
+            if ! inv=$(aws ssm get-command-invocation --command-id "$cmd_id" \
+                --instance-id "$INSTANCE" --output json 2>"$RUNNER_TEMP/ssm-err"); then
+              if grep -q InvocationDoesNotExist "$RUNNER_TEMP/ssm-err"; then
+                inv='{}'
+                continue
+              fi
+              cat "$RUNNER_TEMP/ssm-err" >&2
+              echo "::error::could not read the result of SSM command $cmd_id"
+              exit 1
+            fi
+            status=$(jq -r '.Status' <<<"$inv")
+            case "$status" in
+              Pending | InProgress | Delayed | Cancelling) ;;
+              *)
+                finished=true
+                break
+                ;;
+            esac
+          done
+
+          # Every line is prefixed so host output can never start with `::` and
+          # be taken for a workflow command.
+          echo "=== host output (status: ${status:-unknown}) ==="
+          jq -r '.StandardOutputContent // ""' <<<"$inv" | sed 's/^/| /'
+          errout=$(jq -r '.StandardErrorContent // ""' <<<"$inv")
+          if [ -n "$errout" ]; then
+            echo "=== host stderr ==="
+            printf '%s\n' "$errout" | sed 's/^/| /'
+          fi
+
+          if [ "$finished" != true ]; then
+            echo "::error::gave up waiting for SSM command $cmd_id after 18 minutes (it may still be running on the host)"
+            exit 1
+          fi
+          if [ "$status" != "Success" ]; then
+            details=$(jq -r '.StatusDetails // ""' <<<"$inv")
+            echo "::error::deploy failed: SSM command $cmd_id ended with status $status (details: ${details:-none})"
+            exit 1
+          fi
+          echo "✓ deployed ${SHA:0:7}"

@@ -16,6 +16,10 @@ a static public IP.
 
 > **Hetzner is by far the cheapest** for a side-project tunnel server.
 
+The scripts above provision a host and ship the source over SSH. For an AWS host
+reached only through SSM, with deploys from GitHub Actions (OIDC), see
+[`deploy/aws-ssm/`](aws-ssm/) and [docs/OPERATIONS.md](../docs/OPERATIONS.md) §6.
+
 ## Prerequisites (all providers)
 
 - The provider's CLI installed and authenticated.

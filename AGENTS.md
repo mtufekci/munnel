@@ -85,18 +85,19 @@ integration/
   inspector_test.go # inspector Host/Origin allowlist + token
   ask_test.go      # on-demand TLS check: apex + live tunnels only, refused after disconnect
 docs/
-  OPERATIONS.md   # operator runbook: deploy, SSH, logs, token rotation, hardening, teardown
+  OPERATIONS.md   # operator runbook: deploy, SSM access, logs, token rotation, hardening, teardown
 deploy/
   README.md       # cross-provider deploy guide
   cloud-init.yaml # portable user-data (Docker + .env + systemd unit)
   lib.sh          # shared deploy helpers (render_user_data, wait_ssh, ship_and_start)
   azure/          # Bicep + deploy.sh
   aws/            # CloudFormation + deploy.sh
+  aws-ssm/        # host-deploy.sh + host-deploy_test.sh: SSM-driven deploy on the AWS host (no SSH)
   hetzner/        # deploy.sh (hcloud)
   digitalocean/   # deploy.sh (doctl)
   gcp/            # deploy.sh (gcloud)
 .github/
-  workflows/deploy-server.yml  # manual workflow_dispatch: test on ubuntu-latest, deploy via self-hosted runner on the VM
+  workflows/deploy-server.yml  # manual workflow_dispatch: test on ubuntu-latest, deploy over GitHub OIDC + SSM (GitHub-hosted runner)
 Caddyfile.example # on-demand TLS with ask http://munnel-server:8081/check
 docker-compose.yml# munnel-server + Caddy (built from source, no registry)
 Dockerfile        # golang:1.25 → server binary
@@ -209,6 +210,7 @@ install-dev.sh    # dev: build client, write ~/.munnel/config (token via --token
   `<TOKEN>` placeholders in docs and example files.
 - **Shell scripts are POSIX `sh`** (not bash) so they run on Alpine/minimal VMs.
   Quote variables, avoid bashisms (`[[ ]]`, arrays, `==`).
+  Exception: `deploy/aws-ssm/*.sh` are bash on purpose (Ubuntu host, `pipefail`).
 - **Deploy scripts are idempotent** — re-running must redeploy without
   duplicating resources or clobbering the cloud-init-written `.env`.
 - **Docs are the source of truth for ops**: `docs/OPERATIONS.md` for the runbook,
