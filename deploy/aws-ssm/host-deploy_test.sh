@@ -56,12 +56,25 @@ EOF
   cat > "$SB/bin/aws" <<'EOF'
 #!/usr/bin/env bash
 echo "aws $*" >> "$SB/calls.log"
+# The real CLI finds its region in AWS_DEFAULT_REGION; the script must export it
+# from host.env (the tests run it without a region in the environment).
+if [ "${AWS_DEFAULT_REGION:-}" != eu-central-1 ]; then
+  echo 'stub aws: AWS_DEFAULT_REGION=eu-central-1 is not exported' >&2
+  exit 98
+fi
 # What the .env looked like when the secret was fetched (after the sync).
 if [ -f "$SB/opt/munnel/.env" ]; then cp "$SB/opt/munnel/.env" "$SB/env_at_fetch"; fi
 case "$*" in
   *"secretsmanager get-secret-value"*"--secret-id munnel/nonprod/server-env"*)
-    # What `--query SecretString --output json` prints.
-    if [ -n "${STUB_SECRET_NULL:-}" ]; then echo null; else jq -Rs . < "$SB/secret.txt"; fi ;;
+    case "$*" in
+      *"--query SecretString --output json"*)
+        # A JSON string, or null when the secret has no value.
+        if [ -n "${STUB_SECRET_NULL:-}" ]; then echo null; else jq -Rs . < "$SB/secret.txt"; fi ;;
+      *"--query SecretString --output text"*)
+        # Raw text plus a newline (None for no value), as the real CLI prints it.
+        if [ -n "${STUB_SECRET_NULL:-}" ]; then echo None; else cat "$SB/secret.txt"; echo; fi ;;
+      *) echo "stub aws: unexpected get-secret-value arguments: $*" >&2; exit 99 ;;
+    esac ;;
   *) echo "stub aws: unexpected call: $*" >&2; exit 99 ;;
 esac
 EOF
@@ -114,7 +127,8 @@ teardown() { rm -rf "$SB"; }
 # run_deploy <args...>: runs host-deploy.sh in the sandbox; sets $rc and $SB/out.txt
 # (stdout and stderr together).
 run_deploy() {
-  PATH="$SB/bin:$PATH" MUNNEL_HOST_ENV="$SB/host.env" REAL_RSYNC="$real_rsync" \
+  env -u AWS_DEFAULT_REGION -u AWS_REGION \
+    PATH="$SB/bin:$PATH" MUNNEL_HOST_ENV="$SB/host.env" REAL_RSYNC="$real_rsync" \
     STUB_GIT_HEAD="${STUB_GIT_HEAD:-$SHA}" \
     bash "$script" "$@" > "$SB/out.txt" 2>&1
   rc=$?
