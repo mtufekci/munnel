@@ -58,6 +58,9 @@ jobs:
       - name: Run tests
         run: go test -race ./...
 
+      - name: Run host deploy script tests
+        run: bash deploy/aws-ssm/host-deploy_test.sh
+
   deploy:
     needs: test
     # Run even if the test job was skipped (run_tests=false), but not if it
@@ -70,7 +73,7 @@ jobs:
       contents: read
     steps:
       - name: Assume the deploy role
-        uses: aws-actions/configure-aws-credentials@v5
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.MUNNEL_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.MUNNEL_AWS_REGION }}
@@ -170,7 +173,8 @@ jobs:
             exit 1
           fi
           if [ "$status" != "Success" ]; then
-            echo "::error::deploy failed: SSM command $cmd_id ended with status $status"
+            details=$(jq -r '.StatusDetails // ""' <<<"$inv")
+            echo "::error::deploy failed: SSM command $cmd_id ended with status $status (details: ${details:-none})"
             exit 1
           fi
           echo "✓ deployed ${SHA:0:7}"
