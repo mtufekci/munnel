@@ -121,8 +121,12 @@ stays up.
    MUNNEL_TLS_KEY_FILE=/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/<domain>/<domain>.key
    ```
 
-   `<domain>` is `MUNNEL_DOMAIN`. If Caddy fell back to ZeroSSL, the issuer
-   directory is `acme.zerossl.com-v2-dv90` instead; list
+   `<domain>` is `MUNNEL_DOMAIN`. New certificates come from Let's Encrypt
+   (the Caddyfile names it as the only issuer and sets no ACME email, so there
+   is no ZeroSSL fallback). Caddy does not move or delete certificates it got
+   earlier from ZeroSSL: they stay in `acme.zerossl.com-v2-dv90/` and are never
+   renewed. Point these keys at `acme-v02.api.letsencrypt.org-directory/<domain>/`
+   once it exists, and until then at `acme.zerossl.com-v2-dv90/<domain>/`; list
    `caddy/certificates/` in the `caddy_data` volume to check.
 3. Redeploy (`docker compose up -d --build`, or the Deploy server workflow).
    The startup log shows `control-tls=[::]:7002`; a warning about the
