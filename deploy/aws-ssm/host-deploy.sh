@@ -135,7 +135,8 @@ if [ "$caddy_reload" = 1 ]; then
   # A container still bound to a replaced Caddyfile would reload the old config
   # and pass; recreate it instead (certs live in the munnel_caddy_data volume,
   # so a deploy re-issues nothing itself; the first Caddy restart after the
-  # Caddyfile lost its ACME email does re-issue the old ZeroSSL certificates).
+  # Caddyfile lost its ACME email re-issued the old ZeroSSL certificates on
+  # 28 Oct 2026, and nothing has been re-issued since).
   if docker exec "$caddy" cat /etc/caddy/Caddyfile | cmp -s - "$MUNNEL_DIR/Caddyfile"; then
     docker exec "$caddy" caddy reload --config /etc/caddy/Caddyfile 2>&1 \
       || docker compose restart caddy
