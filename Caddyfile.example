@@ -18,7 +18,9 @@
 # `tls { on_demand }`, and use `tls { dns cloudflare {env.CF_API_TOKEN} }`.
 
 {
-	email admin@example.com
+	# No ACME contact on purpose: Let's Encrypt refuses an example.com address
+	# (invalidContact) and no longer sends expiry mail. With no email Caddy has
+	# no ZeroSSL fallback either, so every certificate comes from Let's Encrypt.
 	on_demand_tls {
 		ask http://munnel-server:8081/check
 	}
