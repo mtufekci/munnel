@@ -104,6 +104,12 @@ if ! aws secretsmanager get-secret-value --secret-id "$MUNNEL_SECRET_ID" \
 fi
 [ -s "$tmp_env" ] || die "the secret $MUNNEL_SECRET_ID has no value yet; put-secret-value first (docs/OPERATIONS.md §4)"
 chmod 600 "$tmp_env"
+# Let compose parse the rendered file before it goes live. Its parse errors quote
+# the offending line, and this script's output ends up in a public job log, so
+# the output is discarded. The live .env stays untouched on failure, which also
+# keeps the exit trap's `compose logs` from parsing the bad file.
+docker compose --project-directory "$MUNNEL_DIR" --env-file "$tmp_env" config --quiet >/dev/null 2>&1 \
+  || die "the secret does not parse as a compose .env; the error is withheld from this log; run 'docker compose config --quiet' in $MUNNEL_DIR in an SSM session"
 mv -f "$tmp_env" "$MUNNEL_DIR/.env"
 tmp_env=""
 echo "✓ .env rendered from the secret"
