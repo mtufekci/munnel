@@ -298,7 +298,10 @@ gh variable set MUNNEL_AWS_REGION      --repo mtufekci/munnel --body eu-central-
 ```
 
 The host script never prints the secret and never touches the `munnel_caddy_data`
-volume (certificates), so a deploy does not cause any certificate to be reissued.
+volume (certificates), so a deploy does not itself reissue any certificate. The
+exception is the first Caddy restart after the Caddyfile lost its ACME email
+(§7): Caddy then looks only in the Let's Encrypt folder, so it reissues the
+copied ZeroSSL certificates, from Let's Encrypt, on their next request.
 The SSM output is cut at 24,000 characters, so the script shows only the tail of
 the image build.
 
@@ -356,11 +359,15 @@ Caddy auto-obtains (Let's Encrypt, HTTP-01, no DNS plugin):
   the server request certs for made-up names.
 
 The Caddyfile sets no ACME email on purpose: Let's Encrypt refuses the
-`example.com` address the file used to carry (`invalidContact`), and with no
-email Caddy has no ZeroSSL fallback, so every new certificate comes from Let's
-Encrypt. A certificate Caddy obtained earlier from ZeroSSL stays in
-`caddy/certificates/acme.zerossl.com-v2-dv90/` until it renews, then moves to
-`acme-v02.api.letsencrypt.org-directory/`.
+`example.com` address the file used to carry (`invalidContact`), and it names
+Let's Encrypt as the only issuer, so there is no ZeroSSL fallback and every
+new certificate comes from Let's Encrypt. Caddy looks for a certificate only in
+the folder of its configured issuer. A certificate it obtained earlier from
+ZeroSSL, in `caddy/certificates/acme.zerossl.com-v2-dv90/`, is therefore used
+only until Caddy's next start; a Caddy that was only reloaded keeps it in
+memory until its renewal window opens, then gets a Let's Encrypt one. Caddy
+never renews, moves or deletes the ZeroSSL files: they stay on disk, and the
+new certificate goes in `acme-v02.api.letsencrypt.org-directory/`.
 
 Certs and the ACME account are stored in the `munnel_caddy_data` docker volume
 and auto-renewed; munnel-server serves the apex certificate on 7002 from the
@@ -368,18 +375,19 @@ same volume (read-only). A deploy never deletes or recreates that volume. If
 the Elastic IP ever changes, update the A records and restart Caddy:
 `docker compose restart caddy`.
 
-> **Operations note (28 Oct 2026): move the 7002 certificate at the apex's
-> first renewal.** The TLS control port (7002) reads the apex certificate from
-> `MUNNEL_TLS_CERT_FILE` / `MUNNEL_TLS_KEY_FILE` in the secret, and today both
-> point at the ZeroSSL directory (`acme.zerossl.com-v2-dv90`). The apex
-> certificate expires on 23 January 2027, and Caddy renews it about 30 days
-> before, around late December 2026. That renewal comes from Let's Encrypt, so
-> the new files appear under
+> **Operations note (28 Oct 2026): move the 7002 certificate once Caddy has a
+> Let's Encrypt apex.** The TLS control port (7002) reads the apex certificate
+> from `MUNNEL_TLS_CERT_FILE` / `MUNNEL_TLS_KEY_FILE` in the secret, and today
+> both point at the ZeroSSL directory (`acme.zerossl.com-v2-dv90`). That
+> certificate expires on 23 January 2027 and is never renewed. Caddy gets the
+> Let's Encrypt apex at its next restart (a recreate in a deploy, the reboot
+> alarm, a host replacement), or at the latest when the renewal window opens
+> (around late December 2026). As soon as
 > `/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/<domain>/<domain>.crt|.key`
-> and the old ones are no longer renewed. Before the old certificate expires,
-> change both keys to the Let's Encrypt paths (§4, `put-secret-value`) and
-> redeploy. Otherwise 7002 keeps serving the old certificate until it expires
-> and clients stop connecting. Check with
+> exists, change both keys to those paths (§4, `put-secret-value`) and
+> redeploy, and in any case before 23 January 2027. Otherwise 7002 keeps
+> serving the old certificate until it expires and clients stop connecting.
+> Check with
 > `openssl s_client -connect <domain>:7002 -servername <domain> </dev/null | openssl x509 -noout -issuer -dates`.
 
 ---
@@ -445,7 +453,7 @@ The source of truth is this repo plus the secret.
 
 | Symptom | Check |
 |--------|-------|
-| Client can't connect to `:7002` | `nc -zv tunnels.momentumpay.xyz 7002` from the dev box. If it fails, the security group rule for 7002 may have been removed. A TLS/certificate error: `openssl s_client -connect tunnels.momentumpay.xyz:7002 </dev/null` and check `MUNNEL_TLS_*` in the secret. An expired certificate after the apex renewed (expected late Dec 2026) means `MUNNEL_TLS_CERT_FILE` / `MUNNEL_TLS_KEY_FILE` still point at the ZeroSSL directory: set them to the `acme-v02.api.letsencrypt.org-directory` paths (§7 note), `put-secret-value`, redeploy. |
+| Client can't connect to `:7002` | `nc -zv tunnels.momentumpay.xyz 7002` from the dev box. If it fails, the security group rule for 7002 may have been removed. A TLS/certificate error: `openssl s_client -connect tunnels.momentumpay.xyz:7002 </dev/null` and check `MUNNEL_TLS_*` in the secret. An expired certificate (the ZeroSSL apex expires 23 Jan 2027) means `MUNNEL_TLS_CERT_FILE` / `MUNNEL_TLS_KEY_FILE` still point at the ZeroSSL directory: once Caddy has a Let's Encrypt apex, set them to the `acme-v02.api.letsencrypt.org-directory` paths (§7 note), `put-secret-value`, redeploy. |
 | Client times out on `:7001` | 7001 (plaintext) is closed. Set `server=tunnels.momentumpay.xyz:7002` and `tls=true` in `~/.munnel/config`, or re-run `install-dev.sh`. |
 | `curl https://sub.tunnels...` → TLS error / no cert | Certs are issued only while a tunnel holds the name: no live tunnel → TLS error, by design. With a tunnel up, the first request triggers issuance (can take ~10-30s); retry. Check `docker compose logs caddy` for `certificate obtained` or ask refusals, and the `wget` ask check in §8. |
 | `curl https://sub.tunnels...` → 502/504 | No tunnel registered for that subdomain, or the dev's local server is down. `docker compose logs munnel-server` shows `tunnel up/down`. |

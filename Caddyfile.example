@@ -19,8 +19,12 @@
 
 {
 	# No ACME contact on purpose: Let's Encrypt refuses an example.com address
-	# (invalidContact) and no longer sends expiry mail. With no email Caddy has
-	# no ZeroSSL fallback either, so every certificate comes from Let's Encrypt.
+	# (invalidContact) and no longer sends expiry mail. The issuer is named so
+	# every certificate comes from Let's Encrypt and never from a ZeroSSL
+	# fallback, whatever Caddy's built-in defaults are in the image you pull.
+	cert_issuer acme {
+		dir https://acme-v02.api.letsencrypt.org/directory
+	}
 	on_demand_tls {
 		ask http://munnel-server:8081/check
 	}
