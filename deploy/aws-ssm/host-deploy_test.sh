@@ -96,6 +96,10 @@ case "$*" in
   "compose ps") echo "STUB-COMPOSE-PS" ;;
   "exec munnel-caddy-1 cat /etc/caddy/Caddyfile") cat "$SB/opt/munnel/Caddyfile" ;;
   "exec munnel-caddy-1 printenv MUNNEL_DOMAIN") echo tunnels.test ;;
+  # compose's own .env parse check; STUB_COMPOSE_CONFIG_ERR makes it fail the way
+  # compose does, quoting the offending line (here: the secret marker).
+  *" config --quiet")
+    if [ -n "${STUB_COMPOSE_CONFIG_ERR:-}" ]; then echo "$STUB_COMPOSE_CONFIG_ERR" >&2; exit 1; fi ;;
   *) : ;;  # compose up, caddy reload, wget ask check, ...
 esac
 exit 0
@@ -245,6 +249,24 @@ test_empty_secret_fails_and_keeps_env() {
   if grep -q '^docker compose up ' "$SB/calls.log"; then echo "the stack was rebuilt without a secret"; return 1; fi
 }
 
+# A secret that compose cannot parse (an unclosed quote, say) must not replace the
+# live .env, and compose's error, which quotes the bad line, must stay out of the
+# output: in the workflow that output goes to a public job log.
+test_malformed_secret_fails_without_leaking_and_keeps_env() {
+  printf 'OLD-ENV\n' > "$SB/opt/munnel/.env"
+  STUB_COMPOSE_CONFIG_ERR="unterminated quoted value $MARKER" run_deploy "$SHA"
+  [ "$rc" -eq 1 ] || { echo "exit code $rc, expected 1"; sed 's/^/    /' "$SB/out.txt"; return 1; }
+  grep -q 'does not parse' "$SB/out.txt" || { echo "no clear 'does not parse' message"; sed 's/^/    /' "$SB/out.txt"; return 1; }
+  grep -q '^docker compose .*--env-file .* config --quiet' "$SB/calls.log" || {
+    echo "compose was never asked to parse the rendered file"
+    return 1
+  }
+  if grep -F -q "$MARKER" "$SB/out.txt"; then echo "compose's parse error reached the output"; return 1; fi
+  [ "$(cat "$SB/opt/munnel/.env")" = OLD-ENV ] || { echo "the live .env was replaced"; return 1; }
+  if grep -q '^docker compose up ' "$SB/calls.log"; then echo "the stack was rebuilt with a bad .env"; return 1; fi
+  if ls "$SB"/opt/munnel/.env.* >/dev/null 2>&1; then echo "the temp .env was left behind"; return 1; fi
+}
+
 # --- runner ------------------------------------------------------------------
 
 failures=0
@@ -266,7 +288,8 @@ for t in \
   sha_mismatch_refuses \
   health_failure_exits_nonzero_and_dumps_logs \
   never_touches_caddy_volume \
-  empty_secret_fails_and_keeps_env
+  empty_secret_fails_and_keeps_env \
+  malformed_secret_fails_without_leaking_and_keeps_env
 do
   run_test "$t"
 done
