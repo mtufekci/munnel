@@ -288,11 +288,13 @@ Run it: Actions → **Deploy server** → Run workflow. Inputs:
   only if `Caddyfile.example` changed; harmless otherwise).
 
 **One-time setup:** apply the landing-zone root `munnel-nonprod` (host, secret,
-deploy role). Then set three repository variables from its outputs. They are
-variables, not secrets, and are not stored in this public repo:
+deploy role). Then set one repository secret and two repository variables from
+its outputs. None of them is stored in this public repo. The role ARN is a
+secret because the deploy job prints its step inputs and GitHub masks secrets,
+not variables, in the public job log:
 
 ```bash
-gh variable set MUNNEL_DEPLOY_ROLE_ARN --repo mtufekci/munnel   # the deploy role's ARN
+gh secret set   MUNNEL_DEPLOY_ROLE_ARN --repo mtufekci/munnel   # the deploy role's ARN
 gh variable set MUNNEL_INSTANCE_ID     --repo mtufekci/munnel   # the instance ID
 gh variable set MUNNEL_AWS_REGION      --repo mtufekci/munnel --body eu-central-1
 ```
@@ -375,20 +377,14 @@ same volume (read-only). A deploy never deletes or recreates that volume. If
 the Elastic IP ever changes, update the A records and restart Caddy:
 `docker compose restart caddy`.
 
-> **Operations note (28 Oct 2026): move the 7002 certificate once Caddy has a
-> Let's Encrypt apex.** The TLS control port (7002) reads the apex certificate
-> from `MUNNEL_TLS_CERT_FILE` / `MUNNEL_TLS_KEY_FILE` in the secret, and today
-> both point at the ZeroSSL directory (`acme.zerossl.com-v2-dv90`). That
-> certificate expires on 23 January 2027 and is never renewed. Caddy gets the
-> Let's Encrypt apex at its next restart (a recreate in a deploy, the reboot
-> alarm, a host replacement), or at the latest when the renewal window opens
-> (around late December 2026). As soon as
-> `/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/<domain>/<domain>.crt|.key`
-> exists, change both keys to those paths (§4, `put-secret-value`) and
-> redeploy, and in any case before 23 January 2027. Otherwise 7002 keeps
-> serving the old certificate until it expires and clients stop connecting.
-> Check with
-> `openssl s_client -connect <domain>:7002 -servername <domain> </dev/null | openssl x509 -noout -issuer -dates`.
+The TLS control port (7002) reads the apex certificate from
+`MUNNEL_TLS_CERT_FILE` / `MUNNEL_TLS_KEY_FILE` in the secret. On 28 Oct 2026
+Caddy got the apex from Let's Encrypt and both keys now point at
+`/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/<domain>/<domain>.crt|.key`.
+Caddy renews in that same folder, so nothing is due. Caddy only reads the folder
+of its configured issuer, so if the issuer ever changes, the two keys must
+follow, before the old certificate expires. Check what 7002 serves with
+`openssl s_client -connect <domain>:7002 -servername <domain> </dev/null | openssl x509 -noout -issuer -dates`.
 
 ---
 
@@ -453,14 +449,14 @@ The source of truth is this repo plus the secret.
 
 | Symptom | Check |
 |--------|-------|
-| Client can't connect to `:7002` | `nc -zv tunnels.momentumpay.xyz 7002` from the dev box. If it fails, the security group rule for 7002 may have been removed. A TLS/certificate error: `openssl s_client -connect tunnels.momentumpay.xyz:7002 </dev/null` and check `MUNNEL_TLS_*` in the secret. An expired certificate (the ZeroSSL apex expires 23 Jan 2027) means `MUNNEL_TLS_CERT_FILE` / `MUNNEL_TLS_KEY_FILE` still point at the ZeroSSL directory: once Caddy has a Let's Encrypt apex, set them to the `acme-v02.api.letsencrypt.org-directory` paths (§7 note), `put-secret-value`, redeploy. |
+| Client can't connect to `:7002` | `nc -zv tunnels.momentumpay.xyz 7002` from the dev box. If it fails, the security group rule for 7002 may have been removed. A TLS/certificate error: `openssl s_client -connect tunnels.momentumpay.xyz:7002 </dev/null` and check `MUNNEL_TLS_*` in the secret. If 7002 serves an expired or wrong certificate, check that `MUNNEL_TLS_CERT_FILE` / `MUNNEL_TLS_KEY_FILE` point at the folder of the issuer Caddy uses (§7), fix them with `put-secret-value`, redeploy. |
 | Client times out on `:7001` | 7001 (plaintext) is closed. Set `server=tunnels.momentumpay.xyz:7002` and `tls=true` in `~/.munnel/config`, or re-run `install-dev.sh`. |
 | `curl https://sub.tunnels...` → TLS error / no cert | Certs are issued only while a tunnel holds the name: no live tunnel → TLS error, by design. With a tunnel up, the first request triggers issuance (can take ~10-30s); retry. Check `docker compose logs caddy` for `certificate obtained` or ask refusals, and the `wget` ask check in §8. |
 | `curl https://sub.tunnels...` → 502/504 | No tunnel registered for that subdomain, or the dev's local server is down. `docker compose logs munnel-server` shows `tunnel up/down`. |
 | Caddy restart-looping | Usually a Caddyfile parse error. `docker compose logs caddy` prints the line. `on_demand_tls` must have an `ask` URL (mandatory in Caddy v2.8+). |
 | munnel-server restart-looping (`--public-scheme must be http or https`) | A `.env` var got concatenated onto the previous line (missing trailing newline in the secret — see §6 caveat). `docker compose config \| grep public-scheme` shows the mangled value. Fix the secret and redeploy. |
 | 8080 reachable from the internet | It shouldn't be. Compose binds `127.0.0.1:8080:8080` and the security group has no rule for it. If exposed, the repo/host compose drifted — fix the port binding. |
-| Workflow fails at "Assume the deploy role" (`Not authorized to perform sts:AssumeRoleWithWebIdentity`) | The run was not on `main`, or the job gained an `environment:` (changes the OIDC subject), or `MUNNEL_DEPLOY_ROLE_ARN` / `MUNNEL_AWS_REGION` is wrong. |
+| Workflow fails at "Assume the deploy role" (`Not authorized to perform sts:AssumeRoleWithWebIdentity`) | The run was not on `main`, or the job gained an `environment:` (changes the OIDC subject), or the `MUNNEL_DEPLOY_ROLE_ARN` secret / `MUNNEL_AWS_REGION` variable is wrong. |
 | Workflow fails at `send-command` (`AccessDenied`, `InvalidInstanceId`) | `MUNNEL_INSTANCE_ID` points at another instance (the role is limited to one), or the SSM agent on the host is offline: `aws ssm describe-instance-information --profile <nonprod-profile> --region eu-central-1`. |
 | Deploy status `TimedOut` or `Failed` | Read the `| ` host output in the job log and the `details:` in the error line. `DeliveryTimedOut` / `Undeliverable`: the host is unreachable by SSM (stopped, or its role lost SSM permissions). `ExecutionTimedOut`: the script ran past 900 s. Output is cut at 24,000 characters; the full log is on the host. |
 | Deploy says the secret does not parse as a compose `.env` | The secret has a malformed line (an unclosed quote, say). Compose's error quotes the line, so it is withheld from the public job log. Fix the secret (§4) and redeploy; to see the error, run `docker compose config --quiet` in `/opt/munnel` in an SSM session. The live `.env` was left alone. |
@@ -498,8 +494,8 @@ purpose. That removes the host, address, network, secret, alarms and deploy
 role. Then, outside AWS:
 
 - remove the `tunnels` and `*.tunnels` A records at Namecheap;
-- delete the repository variables `MUNNEL_DEPLOY_ROLE_ARN`, `MUNNEL_INSTANCE_ID`
-  and `MUNNEL_AWS_REGION`.
+- delete the repository secret `MUNNEL_DEPLOY_ROLE_ARN` and the repository
+  variables `MUNNEL_INSTANCE_ID` and `MUNNEL_AWS_REGION`.
 
 Secrets Manager keeps a deleted secret for its recovery window unless it is
 force-deleted.

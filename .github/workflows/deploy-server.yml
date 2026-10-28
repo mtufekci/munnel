@@ -17,8 +17,9 @@
 # after tests pass (or are skipped).
 #
 # One-time setup: apply the landing-zone root `munnel-nonprod` (host, secret,
-# deploy role), then set three repository variables from its outputs:
-# MUNNEL_DEPLOY_ROLE_ARN, MUNNEL_INSTANCE_ID and MUNNEL_AWS_REGION. See
+# deploy role), then set the repository secret MUNNEL_DEPLOY_ROLE_ARN (a
+# secret, so the public job log masks it) and the repository variables
+# MUNNEL_INSTANCE_ID and MUNNEL_AWS_REGION from its outputs. See
 # docs/OPERATIONS.md §6. The role trusts this repo's main-branch OIDC subject
 # only, so the deploy job must not use an `environment:` (that changes the
 # subject and the role refuses it).
@@ -75,7 +76,7 @@ jobs:
       - name: Assume the deploy role
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ vars.MUNNEL_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.MUNNEL_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.MUNNEL_AWS_REGION }}
           role-session-name: munnel-deploy-${{ github.run_id }}
 
