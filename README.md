@@ -23,7 +23,7 @@ spirit: your server, your domain, your tokens.
 - [CLI reference](#cli-reference)
 - [request inspector](#request-inspector)
 - [self-hosting in production](#self-hosting-in-production)
-- [managed Azure deployment](#managed-azure-deployment)
+- [managed AWS deployment](#managed-aws-deployment)
 - [how multiplexing works](#how-multiplexing-works)
   - [websocket and upgrade tunnels](#websocket-and-upgrade-tunnels)
 - [limitations](#limitations)
@@ -487,20 +487,22 @@ app, so it is locked down:
 
 ---
 
-## managed Azure deployment
+## managed AWS deployment
 
-a production-grade managed instance for devs is documented in
-[docs/OPERATIONS.md](docs/OPERATIONS.md) — an isolated resource group
-(`rg-munnel-dev-westeurope`), a Ubuntu VM running the server behind Caddy with
-on-demand TLS, Log Analytics + alerts, and an operator runbook (SSH access,
-token rotation, redeploy, troubleshooting). the `docker-compose.yml` and
-`Caddyfile.example` in this repo are the shape that deployment runs.
+a managed instance for devs is documented in
+[docs/OPERATIONS.md](docs/OPERATIONS.md) — one small EC2 host in AWS
+(eu-central-1, its own VPC, no SSH) running the server behind Caddy with
+on-demand TLS, its `.env` in Secrets Manager, CloudWatch alarms, and an
+operator runbook (SSM access, token rotation, redeploy, troubleshooting). the
+`docker-compose.yml` and `Caddyfile.example` in this repo are the shape that
+deployment runs.
 
 redeploys can be triggered manually from the **Actions** tab via the `Deploy
-server` workflow (`.github/workflows/deploy-server.yml`) — a self-hosted
-runner on the VM checks out the source, rebuilds the Docker image, runs a
-health check, and never touches the live `.env` secrets. see the runbook §6
-for one-time runner setup.
+server` workflow (`.github/workflows/deploy-server.yml`) — a GitHub-hosted job
+assumes an AWS role over OIDC and sends an SSM command that fetches the commit,
+rebuilds the Docker image on the host, runs a health check, and renders the
+live `.env` from Secrets Manager (no secret is stored in GitHub). see the
+runbook §6 for the one-time setup.
 
 ---
 
