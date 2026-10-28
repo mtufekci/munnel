@@ -501,7 +501,7 @@ redeploys can be triggered manually from the **Actions** tab via the `Deploy
 server` workflow (`.github/workflows/deploy-server.yml`) — a GitHub-hosted job
 assumes an AWS role over OIDC and sends an SSM command that fetches the commit,
 rebuilds the Docker image on the host, runs a health check, and renders the
-live `.env` from Secrets Manager (no secret is stored in GitHub). see the
+live `.env` from Secrets Manager (no AWS credential is stored in GitHub; the role's ARN and unique ID are repository secrets so the public log masks them). see the
 runbook §6 for the one-time setup.
 
 ---

@@ -267,7 +267,7 @@ runners:
 
 1. An optional `go test -race ./...` gate. The deploy aborts if a test fails.
 2. The deploy job assumes the AWS deploy role through GitHub's OIDC provider (no
-   AWS secret is stored in GitHub). The role may only run `ssm:SendCommand` with
+   AWS credential is stored in GitHub). The role may only run `ssm:SendCommand` with
    `AWS-RunShellScript` on this one instance and read the result; it trusts this
    repo's `main` branch only, so the job has no `environment:` (adding one
    changes the OIDC subject and the role refuses it).
@@ -288,22 +288,24 @@ Run it: Actions → **Deploy server** → Run workflow. Inputs:
   only if `Caddyfile.example` changed; harmless otherwise).
 
 **One-time setup:** apply the landing-zone root `munnel-nonprod` (host, secret,
-deploy role). Then set one repository secret and two repository variables from
+deploy role). Then set two repository secrets and two repository variables from
 its outputs. None of them is stored in this public repo. The role ARN is a
 secret because the deploy job prints its step inputs and GitHub masks secrets,
-not variables, in the public job log:
+not variables, in the public job log. The role's unique ID is a secret for the
+same reason: the credentials action logs it, and it encodes the AWS account ID:
 
 ```bash
 gh secret set   MUNNEL_DEPLOY_ROLE_ARN --repo mtufekci/munnel   # the deploy role's ARN
+gh secret set   MUNNEL_DEPLOY_ROLE_ID  --repo mtufekci/munnel   # aws iam get-role --role-name munnel-nonprod-deploy --query Role.RoleId
 gh variable set MUNNEL_INSTANCE_ID     --repo mtufekci/munnel   # the instance ID
 gh variable set MUNNEL_AWS_REGION      --repo mtufekci/munnel --body eu-central-1
 ```
 
 The host script never prints the secret and never touches the `munnel_caddy_data`
 volume (certificates), so a deploy does not itself reissue any certificate. The
-exception is the first Caddy restart after the Caddyfile lost its ACME email
-(§7): Caddy then looks only in the Let's Encrypt folder, so it reissues the
-copied ZeroSSL certificates, from Let's Encrypt, on their next request.
+one exception is past: the first Caddy restart after the Caddyfile lost its ACME
+email (§7) reissued the copied ZeroSSL certificates, from Let's Encrypt, on
+28 Oct 2026. Since then a deploy's reload or recreate reissues nothing.
 The SSM output is cut at 24,000 characters, so the script shows only the tail of
 the image build.
 
@@ -494,8 +496,9 @@ purpose. That removes the host, address, network, secret, alarms and deploy
 role. Then, outside AWS:
 
 - remove the `tunnels` and `*.tunnels` A records at Namecheap;
-- delete the repository secret `MUNNEL_DEPLOY_ROLE_ARN` and the repository
-  variables `MUNNEL_INSTANCE_ID` and `MUNNEL_AWS_REGION`.
+- delete the repository secrets `MUNNEL_DEPLOY_ROLE_ARN` and
+  `MUNNEL_DEPLOY_ROLE_ID` and the repository variables `MUNNEL_INSTANCE_ID` and
+  `MUNNEL_AWS_REGION`.
 
 Secrets Manager keeps a deleted secret for its recovery window unless it is
 force-deleted.

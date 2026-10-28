@@ -4,9 +4,11 @@
 # only from main. Everything runs on GitHub-hosted runners: the deploy job
 # assumes an AWS role through GitHub's OIDC provider and sends one SSM
 # Run Command to the host. There is no runner on the host, no inbound port
-# (the host has no SSH), and no secret in GitHub: the role is assumed with a
-# short-lived token, and the live .env (tunnel token, signing key, session key)
-# lives in AWS Secrets Manager and is rendered on the host.
+# (the host has no SSH), and no AWS credential in GitHub (the repository
+# secrets are the role's ARN and unique ID, held as secrets only so the public
+# log masks them): the role is assumed with a short-lived token, and the live
+# .env (tunnel token, signing key, session key) lives in AWS Secrets Manager
+# and is rendered on the host.
 #
 # The SSM command fetches the commit being deployed from GitHub on the host,
 # then runs deploy/aws-ssm/host-deploy.sh, which rsyncs the source to
@@ -17,9 +19,10 @@
 # after tests pass (or are skipped).
 #
 # One-time setup: apply the landing-zone root `munnel-nonprod` (host, secret,
-# deploy role), then set the repository secret MUNNEL_DEPLOY_ROLE_ARN (a
-# secret, so the public job log masks it) and the repository variables
-# MUNNEL_INSTANCE_ID and MUNNEL_AWS_REGION from its outputs. See
+# deploy role), then set the repository secrets MUNNEL_DEPLOY_ROLE_ARN and
+# MUNNEL_DEPLOY_ROLE_ID (the role's unique ID; secrets, so the public job log
+# masks them) and the repository variables MUNNEL_INSTANCE_ID and
+# MUNNEL_AWS_REGION from its outputs. See
 # docs/OPERATIONS.md §6. The role trusts this repo's main-branch OIDC subject
 # only, so the deploy job must not use an `environment:` (that changes the
 # subject and the role refuses it).
@@ -73,10 +76,19 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Mask the deploy role's unique ID
+        # The credentials action logs the role's unique ID, which encodes the
+        # AWS account ID; masking it keeps the public log clean.
+        env:
+          ROLE_ID: ${{ secrets.MUNNEL_DEPLOY_ROLE_ID }}
+        run: if [ -n "$ROLE_ID" ]; then echo "::add-mask::$ROLE_ID"; fi
+
       - name: Assume the deploy role
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.MUNNEL_DEPLOY_ROLE_ARN }}
+          # Masks the account ID in later AWS error text.
+          mask-aws-account-id: true
           aws-region: ${{ vars.MUNNEL_AWS_REGION }}
           role-session-name: munnel-deploy-${{ github.run_id }}
 
