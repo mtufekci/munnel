@@ -390,6 +390,7 @@ expires.
 | flag | default | description |
 |---|---|---|
 | `--domain` | `localhost` | base domain for tunnel routing |
+| `--extra-domains` | `""` | comma-separated further base domains (or `$MUNNEL_EXTRA_DOMAINS`): tunnel `<sub>` is also served at `<sub>.<extra>`; their apex and `www.` are not served or certified; clients are still shown the `--domain` URL |
 | `--control-addr` | `:7001` | control + multiplex listening address (plaintext) |
 | `--control-tls-addr` | `:7002` | control + multiplex over TLS; listens only when a certificate is configured |
 | `--tls-cert-file` | `""` | PEM certificate for the TLS control port; re-read when it changes |
@@ -474,7 +475,28 @@ app, so it is locked down:
    munnel 3000 -s myapp -t secret123 --server tunnels.example.com:7001
    ```
 
-4. **hardening** — always set `--auth-tokens` (or `--auth-file`) on a public
+4. **extra domains** (optional) — serve the same tunnels under another domain
+   you own, e.g. `myapp.example.org` next to `myapp.tunnels.example.com`. set
+   `MUNNEL_EXTRA_DOMAINS=example.org` in `.env` (comma-separated for several)
+   and run `docker compose up -d`. add one DNS record per name you want there:
+
+   ```
+   myapp.example.org       A    <vps-ip>
+   ```
+
+   the apex and `www.` of an extra domain are never served or certified, so
+   they can keep pointing at your website or mail. all domains share one set
+   of names: whoever holds `myapp` is reached at `myapp.<every domain>`, so
+   prefer per-name records to a wildcard on a domain you use for other
+   things. the shipped `Caddyfile.example` has a catch-all `https://` site
+   for these names; certificates come on demand through the same ask check,
+   only for names with a live tunnel. clients are still shown their
+   `--domain` URL. when one domain is a suffix of another, the most specific
+   one wins: with `--domain tunnels.example.com` and extra `example.com`,
+   `tunnels.example.com` stays the landing page and `foo.tunnels.example.com`
+   is tunnel `foo`.
+
+5. **hardening** — always set `--auth-tokens` (or `--auth-file`) on a public
    server; otherwise anyone who finds it can host content through your domain.
    the control port (7001) must be reachable from clients, and it is
    **plaintext**: each client's token, and every request and response it
@@ -625,6 +647,7 @@ munnel/
 │   │   ├── auth.go             # token auth (static + signed) + reserved subdomains + reserved names
 │   │   ├── control.go          # control listener, handshake, registration
 │   │   ├── ask.go              # caddy on-demand TLS check: apex + live tunnels only
+│   │   ├── domains.go          # extra base domains: validation, host → tunnel name (most specific wins)
 │   │   ├── registry.go         # thread-safe subdomain → tunnel registry (same-token takeover)
 │   │   ├── certfile.go         # TLS control-port certificate, reloaded when the files change
 │   │   ├── proxy.go            # public HTTP ingress + request/WebSocket relay + forward-auth
@@ -658,6 +681,7 @@ munnel/
 │   ├── handshake_test.go       # handshake line framing at 64/128/256…-byte hellos
 │   ├── inspector_test.go       # inspector Host/Origin allowlist + per-launch token
 │   ├── ask_test.go             # on-demand TLS check: apex + live tunnels only
+│   ├── extra_domains_test.go   # extra base domains: same tunnel, apex/www refused, suffix overlap
 │   └── forwardauth_test.go     # protected tunnels: redirect, login, header injection, spoof stripping
 ├── deploy/                     # cross-provider provisioning scripts
 │   ├── README.md               # deploy guide (why scp, provider prerequisites)
@@ -681,7 +705,7 @@ munnel/
 ├── Dockerfile                  # multi-stage server image (scratch)
 ├── docker-compose.yml          # production shape: server + caddy (TLS)
 ├── Caddyfile.example           # on-demand TLS reverse proxy template
-├── .env.example                # MUNNEL_DOMAIN / MUNNEL_TOKENS / MUNNEL_SCHEME / signing key / auth stub
+├── .env.example                # MUNNEL_DOMAIN / MUNNEL_TOKENS / MUNNEL_SCHEME / signing key / auth stub / extra domains
 ├── Makefile                    # build / test / cross-compile
 ├── install.sh                  # source installer (builds client + server)
 ├── install-dev.sh              # one-command dev setup for a managed server

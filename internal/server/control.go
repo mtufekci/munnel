@@ -38,6 +38,13 @@ type Config struct {
 	ControlAddr string // control + multiplex listener, e.g. ":7001"
 	ProxyAddr   string // public HTTP ingress, e.g. ":8080"
 
+	// ExtraDomains are further base domains, e.g. "example.org": tunnel foo
+	// is also reachable at foo.example.org (one shared namespace). Their apex
+	// and www. are not served and get no certificate. Lower-case hostnames,
+	// no duplicates, none equal to Domain; New refuses anything else. URLs
+	// reported to clients keep using Domain.
+	ExtraDomains []string
+
 	// AskAddr serves Caddy's on-demand TLS permission check (GET
 	// /check?domain=), approving only the apex and live tunnels, e.g.
 	// ":8081". "" = off. Keep it off the public internet.
@@ -68,9 +75,10 @@ type Config struct {
 
 // Server is the munnel tunnel server: control listener + public proxy.
 type Server struct {
-	cfg Config
-	reg *Registry
-	log *log.Logger
+	cfg   Config
+	reg   *Registry
+	log   *log.Logger
+	bases []string // Domain + ExtraDomains, longest first (see tunnelHost)
 
 	controlLn    net.Listener
 	controlTLSLn net.Listener // nil when the TLS control listener is off
@@ -82,6 +90,9 @@ type Server struct {
 func New(cfg Config) (*Server, error) {
 	if cfg.Domain == "" {
 		cfg.Domain = "localhost"
+	}
+	if err := checkExtraDomains(cfg.Domain, cfg.ExtraDomains); err != nil {
+		return nil, err
 	}
 	if cfg.ControlAddr == "" {
 		cfg.ControlAddr = ":7001"
@@ -108,7 +119,7 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
-	return &Server{cfg: cfg, reg: NewRegistry(), log: cfg.Logger}, nil
+	return &Server{cfg: cfg, reg: NewRegistry(), log: cfg.Logger, bases: baseDomains(cfg.Domain, cfg.ExtraDomains)}, nil
 }
 
 // Registry exposes the live tunnel registry (used by tests/metrics).
@@ -214,8 +225,12 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if s.askLn != nil {
 		proxy += " ask=" + s.askLn.Addr().String()
 	}
+	domain := s.cfg.Domain
+	if len(s.cfg.ExtraDomains) > 0 {
+		domain += " extra-domains=" + strings.Join(s.cfg.ExtraDomains, ",")
+	}
 	s.log.Printf("munnel-server up — domain=%s control=%s proxy=%s auth=%s",
-		s.cfg.Domain, control, proxy, mode)
+		domain, control, proxy, mode)
 
 	go s.acceptLoop(s.controlLn, false, errCh)
 	if s.controlTLSLn != nil {

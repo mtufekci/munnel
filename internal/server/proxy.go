@@ -52,7 +52,7 @@ func isClosedErr(err error) bool {
 }
 
 // ServeHTTP routes by Host: the bare domain serves the landing page, a
-// subdomain is proxied into its tunnel.
+// subdomain of the domain or of an extra domain is proxied into its tunnel.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host := stripPort(r.Host)
 
@@ -70,11 +70,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !strings.HasSuffix(host, "."+s.cfg.Domain) {
+	// <sub>.<domain> or <sub>.<extra domain>: one tunnel namespace. An extra
+	// domain's apex and www. are not ours and get the unknown-host page.
+	sub, base, ok := s.tunnelHost(host)
+	if !ok {
 		s.errorPage(w, http.StatusNotFound, "unknown host", fmt.Sprintf("%q is not a subdomain of %s", host, s.cfg.Domain))
 		return
 	}
-	sub := strings.TrimSuffix(host, "."+s.cfg.Domain)
 	if !proto.ValidSubdomain(sub) {
 		s.errorPage(w, http.StatusNotFound, "unknown host", fmt.Sprintf("%q is not a valid tunnel subdomain", sub))
 		return
@@ -83,7 +85,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c := s.reg.Get(sub)
 	if c == nil || !c.waitReady(r.Context()) {
 		s.errorPage(w, http.StatusBadGateway, "tunnel offline",
-			fmt.Sprintf("no client is connected for %s.%s", sub, s.cfg.Domain))
+			fmt.Sprintf("no client is connected for %s.%s", sub, base))
 		return
 	}
 

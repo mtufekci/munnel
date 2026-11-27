@@ -40,3 +40,17 @@
 	}
 	reverse_proxy munnel-server:8080
 }
+
+# Extra base domains (MUNNEL_EXTRA_DOMAINS, e.g. dgdg.example.org next to
+# *.tunnels.example.com): a catch-all site, so no edit is needed here per
+# domain. Caddy picks the most specific site first and puts host-less sites
+# last, so the two blocks above keep serving --domain exactly as before. Any
+# other name gets a certificate only if the ask check approves it, and the
+# check approves only <sub>.<extra domain> with a live tunnel (never an extra
+# domain's apex or www.). With no extra domains it approves nothing here.
+https:// {
+	tls {
+		on_demand
+	}
+	reverse_proxy munnel-server:8080
+}

@@ -13,10 +13,14 @@
 #                                #   apex, read from the caddy_data volume (see deploy/README.md)
 #   MUNNEL_RESERVED=<name>=<id>  # optional: reserved names, "name=tokID[,tokID]" entries
 #                                #   separated by ';' (claimable only by those tokens, over TLS)
+#   MUNNEL_EXTRA_DOMAINS=a.org   # optional: further base domains, comma-separated; tunnel
+#                                #   <sub> is also served at <sub>.a.org (not the apex or www.)
 #
 # DNS: point an A record for both the apex and the wildcard at your host:
 #   tunnels.example.com     A  <host-ip>
 #   *.tunnels.example.com   A  <host-ip>
+# and, for an extra domain, one A record per tunnel name you want there:
+#   myapp.example.org       A  <host-ip>
 #
 # Caddy obtains per-subdomain Let's Encrypt certs on demand (on first request
 # to each *.tunnels.example.com subdomain). Caddy first asks munnel-server
@@ -36,6 +40,7 @@ services:
       - MUNNEL_SESSION_KEY=${MUNNEL_SESSION_KEY:-}
       - MUNNEL_ENROLL_PASSWORD=${MUNNEL_ENROLL_PASSWORD:-}
       - MUNNEL_RESERVED=${MUNNEL_RESERVED:-}
+      - MUNNEL_EXTRA_DOMAINS=${MUNNEL_EXTRA_DOMAINS:-}
     volumes:
       # Caddy's storage, read-only: the TLS control port can reuse the
       # Let's Encrypt certificate Caddy keeps renewed for the apex domain
