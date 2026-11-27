@@ -65,6 +65,7 @@ internal/
   server/
     control.go    # server-side mux: sessions, subdomain routing, frame dispatch
     ask.go        # Caddy on-demand TLS check (--ask-addr): apex + live tunnels only
+    domains.go    # --extra-domains: validation, host → tunnel name (exact apex first, then longest base)
     ingress.go    # HTTP ingress listener (behind Caddy on 443)
   mux/
     *.go          # 9-byte-binary multiplexer protocol (frame codec, streams)
@@ -84,6 +85,7 @@ integration/
   handshake_test.go # hello/ack line framing at 64/128/256…-byte boundaries
   inspector_test.go # inspector Host/Origin allowlist + token
   ask_test.go      # on-demand TLS check: apex + live tunnels only, refused after disconnect
+  extra_domains_test.go # same tunnel on an extra domain; extra apex/www refused; suffix overlap
 docs/
   OPERATIONS.md   # operator runbook: deploy, SSM access, logs, token rotation, hardening, teardown
 deploy/
@@ -131,6 +133,18 @@ install-dev.sh    # dev: build client, write ~/.munnel/config (token via --token
   deleted and recreated, or the running Caddy keeps the old config.
   Regression test: `integration/ask_test.go` (verified to fail with a
   suffix-only rule).
+- **Extra domains** (`--extra-domains` / `MUNNEL_EXTRA_DOMAINS`,
+  `internal/server/domains.go`): tunnel `foo` is also served, and certified,
+  at `foo.<extra>`; one shared namespace. An extra domain's apex and `www.`
+  are never served or approved (the owner's mail or website lives there).
+  `tunnelHost` checks exact apex/`www.` matches of every base first, then the
+  longest base suffix, so overlapping domains (`tunnels.example.com` +
+  `example.com`) never read an apex as a tunnel name. Proxy and ask share it.
+  Caddy serves these names through the catch-all `https://` site in
+  `Caddyfile.example`, which Caddy sorts after the host-matched sites, so the
+  primary blocks are unaffected; the ask check is the only gate. Clients are
+  still told the `--domain` URL. Tests: `internal/server/domains_test.go`,
+  `integration/extra_domains_test.go`.
 - **Two token kinds, one Authenticator**: static tokens (CSV/JSON, server holds
   the list) and signed tokens (HMAC-SHA256, package `token`, self-describing
   subdomain + expiry). A token starting with `m1.` is signed; anything else is

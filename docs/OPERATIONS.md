@@ -388,6 +388,18 @@ of its configured issuer, so if the issuer ever changes, the two keys must
 follow, before the old certificate expires. Check what 7002 serves with
 `openssl s_client -connect <domain>:7002 -servername <domain> </dev/null | openssl x509 -noout -issuer -dates`.
 
+**Extra domains**: with `MUNNEL_EXTRA_DOMAINS=example.org` in the secret
+(§4), a tunnel `myapp` is also served at `myapp.example.org`. Add one A
+record per name you want served there (`myapp.example.org A <elastic-ip>`) at
+that domain's DNS provider; leave its apex and `www.` alone, munnel never
+serves or certifies them. Prefer per-name records to a wildcard: every live
+tunnel name is valid under every extra domain, so a wildcard would let any
+dev's tunnel appear under that domain. The Caddyfile's catch-all `https://`
+site issues these certificates on demand through the same ask check, which
+approves only `<name>.<extra domain>` with a live tunnel. If the domain has
+CAA records, they must allow `letsencrypt.org`. Clients are still shown their
+`tunnels.momentumpay.xyz` URL.
+
 ---
 
 ## 8. Operations cheat sheet (all on the host, in an SSM session as root)

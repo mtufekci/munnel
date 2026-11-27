@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/mtufekci/munnel/internal/proto"
 )
 
 // serveAsk answers Caddy's on-demand TLS permission check ("ask") until the
@@ -35,14 +33,16 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 }
 
 // certAllowed reports whether a certificate may be issued for host: the apex
-// (and its www alias, which serves the landing page), or a subdomain a client
-// holds right now. Approving every name under the domain would let anyone
-// make the server request certificates for made-up names and spend the ACME
-// rate limit of the whole registered domain.
+// (and its www alias, which serves the landing page), or a subdomain of the
+// domain or of an extra domain that a client holds right now. Approving
+// every name under a domain would let anyone make the server request
+// certificates for made-up names and spend the ACME rate limit of the whole
+// registered domain. An extra domain's apex and www. are never approved:
+// they belong to the domain's owner, not to munnel. host is not stripped of
+// a trailing dot (SNI never carries one), so "name." is refused.
 func (s *Server) certAllowed(host string) bool {
 	if host == s.cfg.Domain || host == "www."+s.cfg.Domain {
 		return true
 	}
-	sub, ok := strings.CutSuffix(host, "."+s.cfg.Domain)
-	return ok && proto.ValidSubdomain(sub) && s.reg.Get(sub) != nil
+	return s.liveTunnelHost(host)
 }

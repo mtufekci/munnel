@@ -37,6 +37,7 @@ func run() int {
 	fs := flag.NewFlagSet("munnel-server", flag.ExitOnError)
 	fs.SetOutput(os.Stderr)
 	domain := fs.String("domain", "localhost", "base domain for tunnel routing")
+	extraDomains := fs.String("extra-domains", "", "comma-separated further base domains (or $MUNNEL_EXTRA_DOMAINS): tunnel <sub> is also served at <sub>.<extra>; their apex and www. are not served")
 	controlAddr := fs.String("control-addr", ":7001", "listen address for control/multiplexing (plaintext)")
 	controlTLSAddr := fs.String("control-tls-addr", ":7002", "listen address for the TLS control port (runs only with --tls-cert-file/--tls-key-file)")
 	tlsCertFile := fs.String("tls-cert-file", "", "PEM certificate for the TLS control port (e.g. Caddy's certificate for --domain); reloaded when it changes")
@@ -138,8 +139,15 @@ flags:
 		enrollPW = strings.TrimSpace(os.Getenv("MUNNEL_ENROLL_PASSWORD"))
 	}
 
+	// Extra base domains: --extra-domains wins, else $MUNNEL_EXTRA_DOMAINS.
+	extras := *extraDomains
+	if extras == "" {
+		extras = os.Getenv("MUNNEL_EXTRA_DOMAINS")
+	}
+
 	srv, err := server.New(server.Config{
 		Domain:         *domain,
+		ExtraDomains:   server.SplitDomainList(extras),
 		ControlAddr:    *controlAddr,
 		ControlTLSAddr: *controlTLSAddr,
 		ControlTLS:     controlTLS,
